@@ -17,6 +17,10 @@ from tender_royal_pulse.crawler.queue import (
     update_heartbeat,
     upsert_tender,
 )
+from tender_royal_pulse.crawler.retry import (
+    classify_error,
+    get_retry_config,
+)
 from tender_royal_pulse.monitoring.logging import EventLogger, setup_logging
 
 
@@ -140,23 +144,33 @@ def execute_list_page_task(
         )
 
     except Exception as exc:
-        error_class = type(exc).__name__
+        error_class = classify_error(exc)
+        retry_config = get_retry_config(exc)
         error_message = str(exc)
-        log.exception("task_failed", error_class=error_class)
-        if task.attempt_count >= task.max_attempts:
-            mark_task_failed_permanent(conn, task.id, error_class, error_message)
-            log.error("task_failed_permanent", error_class=error_class, max_attempts=task.max_attempts)
+        log.exception("task_failed", error_class=error_class.value)
+        if task.attempt_count >= retry_config.max_attempts:
+            mark_task_failed_permanent(conn, task.id, error_class.value, error_message)
+            log.error(
+                "task_failed_permanent",
+                error_class=error_class.value,
+                attempt=task.attempt_count,
+                max_attempts=retry_config.max_attempts,
+            )
             log_task_attempt(
                 conn, task.id, task.attempt_count, "FAILED_PERMANENT",
-                error_class=error_class, error_message=error_message,
+                error_class=error_class.value, error_message=error_message,
                 finished_at=task.updated_at,
             )
         else:
-            mark_task_failed_retryable(conn, task.id, error_class, error_message)
-            log.warning("task_failed_retryable", error_class=error_class)
+            mark_task_failed_retryable(conn, task.id, error_class.value, error_message)
+            log.warning(
+                "task_failed_retryable",
+                error_class=error_class.value,
+                attempt=task.attempt_count,
+            )
             log_task_attempt(
                 conn, task.id, task.attempt_count, "FAILED_RETRYABLE",
-                error_class=error_class, error_message=error_message,
+                error_class=error_class.value, error_message=error_message,
                 finished_at=task.updated_at,
             )
 
