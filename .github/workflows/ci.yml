@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e .[dev]
-      - run: playwright install
+      - run: playwright install chromium
       - run: pytest tests/ -v
 
   build:
