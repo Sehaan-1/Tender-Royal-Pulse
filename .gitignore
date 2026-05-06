@@ -48,3 +48,6 @@ samples/sample_outputs/**/*.png
 samples/sample_outputs/phase2_live_smoke/
 samples/sample_outputs/tenders.csv
 samples/sample_outputs/tenders.jsonl
+
+# Run artifacts / summaries (generated per run)
+reports/
