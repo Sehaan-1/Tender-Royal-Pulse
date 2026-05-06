@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,12 @@ from tender_royal_pulse.portal.eprocure_dom import (
     extract_listing_rows,
 )
 
-# Note: Fixing a typo in extract_listing_rows import if needed, based on eprocure_dom.py
+pytestmark = pytest.mark.integration
+
+requires_playwright = pytest.mark.skipif(
+    os.environ.get("SKIP_PLAYWRIGHT_TESTS", "0") == "1",
+    reason="Playwright integration tests skipped via env flag"
+)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "html"
 
@@ -41,6 +47,7 @@ def _load_detail_page(page: Page) -> Page:
     return page
 
 
+@requires_playwright
 class TestListingExtraction:
     def test_extract_rows_returns_correct_count(self, page):
         _load_listing_page(page)
@@ -78,6 +85,7 @@ class TestListingExtraction:
         assert rows[0].detail_url.startswith("https://eprocure.gov.in")
 
 
+@requires_playwright
 class TestPaginationNavigation:
     def test_has_next_returns_true_when_next_available(self, page):
         _load_listing_page(page)
@@ -85,6 +93,7 @@ class TestPaginationNavigation:
         assert nav.has_next() is True
 
 
+@requires_playwright
 class TestDetailExtraction:
     def test_extract_detail_tender_id(self, page):
         _load_detail_page(page)

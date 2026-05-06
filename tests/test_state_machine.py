@@ -21,16 +21,3 @@ class TestSessionContext:
         assert ctx.storage_state == state
         assert ctx.user_agent == "Custom UA"
         assert ctx.version == 1
-
-
-class TestStateTransitions:
-    """State transition unit tests - crash recovery integration test required."""
-
-    def test_pending_to_running(self):
-        pass  # TODO: implement
-
-    def test_running_to_done(self):
-        pass  # TODO: implement
-
-    def test_retryable_retry_limit(self):
-        pass  # TODO: implement

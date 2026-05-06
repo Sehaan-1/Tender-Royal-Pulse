@@ -111,7 +111,7 @@ class EventLogger:
 
 
 def setup_logging(level: int = logging.INFO) -> EventLogger:
-    logger = logging.getLogger("tenderpulse")
+    logger = logging.getLogger("tender_royal_pulse")
     logger.setLevel(level)
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stdout)

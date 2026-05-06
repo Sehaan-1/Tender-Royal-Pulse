@@ -9,7 +9,7 @@ class JSONLExporter:
     def __init__(self, output_path: str):
         self.output_path = Path(output_path)
 
-    def export(self, data: list[dict[str, Any]], filename: str):
+    def export(self, data: list[dict[str, Any]], filename: str) -> None:
         if not data:
             logger.warning(f"No data to export to {filename}")
             return

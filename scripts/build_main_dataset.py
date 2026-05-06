@@ -1,11 +1,10 @@
 import json
+import os
 import random
 from datetime import datetime, timedelta
-from pathlib import Path
 
-from src.tenderpulse.exporters.csv_exporter import CSVExporter
-from src.tenderpulse.exporters.jsonl_exporter import JSONLExporter
-from src.tenderpulse.reporters.run_summary import RunSummaryReporter
+from tender_royal_pulse.exporters import CSVExporter, JSONLExporter
+from tender_royal_pulse.reporters import RunSummaryReporter
 
 
 def generate_mock_dataset(count=500):
@@ -31,10 +30,10 @@ def main():
     tenders = generate_mock_dataset(500)
 
     # Export Tenders
-    csv_exp = CSVExporter(Path(dataset_path))
+    csv_exp = CSVExporter(dataset_path)
     csv_exp.export(tenders, "tenders.csv")
 
-    jsonl_exp = JSONLExporter(Path(dataset_path))
+    jsonl_exp = JSONLExporter(dataset_path)
     jsonl_exp.export(tenders, "tenders.jsonl")
 
     # Mock Attachments
@@ -64,6 +63,7 @@ def main():
     reporter.save_summary(run_id, summary)
 
     # Also save a sample run summary as requested in deliverables
+    os.makedirs("reports", exist_ok=True)
     with open("reports/sample_run_summary.json", "w") as f:
         json.dump(summary, f, indent=4)
 

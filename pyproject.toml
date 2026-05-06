@@ -34,7 +34,7 @@ dev = [
 ]
 
 [project.scripts]
-tender-royal-pulse = "tender_royal_pulse.cli:app"
+tenderpulse = "tender_royal_pulse.cli:app"
 
 [tool.ruff]
 target-version = "py311"
@@ -55,3 +55,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "integration: marks tests as integration tests (requires Playwright/DB)",
+]
+addopts = ["-m", "not integration"]

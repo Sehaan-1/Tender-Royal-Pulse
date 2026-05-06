@@ -3,8 +3,7 @@ import json
 import unittest
 from pathlib import Path
 
-from tenderpulse.exporters.csv_exporter import CSVExporter
-from tenderpulse.exporters.jsonl_exporter import JSONLExporter
+from tender_royal_pulse.exporters import CSVExporter, JSONLExporter
 
 
 class TestExporters(unittest.TestCase):

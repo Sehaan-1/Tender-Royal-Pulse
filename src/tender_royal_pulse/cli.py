@@ -2,7 +2,7 @@ from pathlib import Path
 
 import typer
 
-app = typer.Typer(name="tenderpulse", help="eProcure tender crawler with crash recovery")
+app = typer.Typer(name="tender_royal_pulse", help="eProcure tender crawler with crash recovery")
 
 
 @app.command()

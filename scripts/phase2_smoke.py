@@ -21,13 +21,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page, sync_playwright  # noqa: E402
 
-from tender_royal_pulse.portal.eprocure_dom import (
+from tender_royal_pulse.models import Tender  # noqa: E402
+from tender_royal_pulse.portal.eprocure_dom import (  # noqa: E402
     CLOSING_7DAYS_SELECTOR,
     PaginationNavigator,
-    TenderDetail,
-    TenderListing,
     extract_detail_page,
     extract_listing_rows,
     wait_for_rows,
@@ -55,16 +54,16 @@ def _write_jsonl(records: list[dict], path: Path) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _merge_record(listing: TenderListing, detail: TenderDetail | None) -> dict:
-    rec = listing.to_dict()
+def _merge_record(listing: Tender, detail: Tender | None) -> dict:
+    rec = listing.model_dump()
     if detail:
-        det = detail.to_dict()
+        det = detail.model_dump()
         rec.update(det)
     return rec
 
 
-def _fetch_listings(page: Page, max_pages: int) -> list[TenderListing]:
-    all_listings: list[TenderListing] = []
+def _fetch_listings(page: Page, max_pages: int) -> list[Tender]:
+    all_listings: list[Tender] = []
     nav = PaginationNavigator(page)
 
     page.goto(LISTING_URL, wait_until="domcontentloaded", timeout=60000)
@@ -101,10 +100,10 @@ def _fetch_listings(page: Page, max_pages: int) -> list[TenderListing]:
 
 
 def _fetch_details(
-    page: Page, listings: list[TenderListing], sample: int
-) -> tuple[list[dict], list[TenderDetail]]:
+    page: Page, listings: list[Tender], sample: int
+) -> tuple[list[dict], list[Tender]]:
     combined: list[dict] = []
-    details: list[TenderDetail] = []
+    details: list[Tender] = []
 
     to_detail = listings[:sample]
 
@@ -114,7 +113,7 @@ def _fetch_details(
             combined.append(_merge_record(listing, None))
             continue
 
-        print(f"  [{i+1}/{sample}] Fetching detail: {listing.title_ref[:60] if listing.title_ref else 'N/A'} ...")
+        print(f"  [{i+1}/{sample}] Fetching detail: {listing.title[:60] if listing.title else 'N/A'} ...")
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(1500)
@@ -130,7 +129,7 @@ def _fetch_details(
 
     for listing in listings[sample:]:
         combined.append(_merge_record(listing, None))
-        details.append(TenderDetail())
+        details.append(Tender(tender_id=""))
 
     return combined, details
 
@@ -169,7 +168,7 @@ def run_smoke(max_pages: int = 2, detail_sample: int = 5) -> None:
             detail_with_id = [
                 d for d in details if d.tender_id
             ]
-            listing_with_id = [l for l in listings if l.tender_id]
+            listing_with_id = [listing for listing in listings if listing.tender_id]
             print(f"\n    Detail success: {len(detail_with_id)}/{min(len(listings), detail_sample)}")
             print(f"    Listings with tender_id: {len(listing_with_id)}/{len(listings)}")
 
@@ -180,7 +179,7 @@ def run_smoke(max_pages: int = 2, detail_sample: int = 5) -> None:
             print(f"\n[3] Exported: {csv_path} ({len(combined)} records)")
             print(f"    Exported: {jsonl_path} ({len(combined)} records)")
 
-            sample_ids = [l.tender_id for l in listings[:5] if l.tender_id]
+            sample_ids = [listing.tender_id for listing in listings[:5] if listing.tender_id]
             print("\n[4] Summary:")
             print(f"    Listings: {len(listings)}")
             print(f"    With tender_id: {len(listing_with_id)}")

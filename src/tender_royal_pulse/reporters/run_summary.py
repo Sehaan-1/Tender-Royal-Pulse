@@ -9,7 +9,7 @@ class RunSummaryReporter:
     def __init__(self, base_reports_dir: str = "reports"):
         self.base_reports_dir = Path(base_reports_dir)
 
-    def save_summary(self, run_id: str, summary_data: dict[str, Any]):
+    def save_summary(self, run_id: str, summary_data: dict[str, Any]) -> None:
         run_dir = self.base_reports_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
