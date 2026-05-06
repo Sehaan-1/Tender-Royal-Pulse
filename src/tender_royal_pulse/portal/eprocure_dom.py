@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from playwright.sync_api import Locator, Page
+
+from tender_royal_pulse.models import Attachment, Tender
 
 ROWS_SELECTOR = "table.list_table tr.even, table.list_table tr.odd"
 PAGINATION_CONTAINER_SELECTOR = 'span[id^="informal_"]'
@@ -11,125 +12,6 @@ NEXT_BUTTON_SELECTOR = 'a[id="linkFwd"]'
 CLOSING_7DAYS_SELECTOR = 'a[id="LinkSubmit_0"]'
 CLOSING_TODAY_SELECTOR = 'a[id="tabByClosingToday"]'
 PAGE_CONTENT_SELECTOR = "td.page_content, div.page_content"
-
-
-class TenderListing:
-    __slots__ = (
-        "sl_no",
-        "published_date",
-        "closing_date",
-        "opening_date",
-        "title_ref",
-        "org_chain",
-        "tender_id",
-        "detail_url",
-    )
-
-    def __init__(
-        self,
-        sl_no: str | None = None,
-        published_date: str | None = None,
-        closing_date: str | None = None,
-        opening_date: str | None = None,
-        title_ref: str | None = None,
-        org_chain: str | None = None,
-        tender_id: str | None = None,
-        detail_url: str | None = None,
-    ) -> None:
-        self.sl_no = sl_no
-        self.published_date = published_date
-        self.closing_date = closing_date
-        self.opening_date = opening_date
-        self.title_ref = title_ref
-        self.org_chain = org_chain
-        self.tender_id = tender_id
-        self.detail_url = detail_url
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "sl_no": self.sl_no,
-            "published_date": self.published_date,
-            "closing_date": self.closing_date,
-            "opening_date": self.opening_date,
-            "title_ref": self.title_ref,
-            "org_chain": self.org_chain,
-            "tender_id": self.tender_id,
-            "detail_url": self.detail_url,
-        }
-
-
-class TenderDetail:
-    __slots__ = (
-        "tender_id",
-        "reference_number",
-        "org_chain",
-        "tender_type",
-        "category",
-        "tender_title",
-        "tender_value",
-        "emd_amount",
-        "doc_fee",
-        "attachments",
-    )
-
-    def __init__(
-        self,
-        tender_id: str | None = None,
-        reference_number: str | None = None,
-        org_chain: str | None = None,
-        tender_type: str | None = None,
-        category: str | None = None,
-        tender_title: str | None = None,
-        tender_value: str | None = None,
-        emd_amount: str | None = None,
-        doc_fee: str | None = None,
-        attachments: list[Attachment] | None = None,
-    ) -> None:
-        self.tender_id = tender_id
-        self.reference_number = reference_number
-        self.org_chain = org_chain
-        self.tender_type = tender_type
-        self.category = category
-        self.tender_title = tender_title
-        self.tender_value = tender_value
-        self.emd_amount = emd_amount
-        self.doc_fee = doc_fee
-        self.attachments = attachments or []
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "tender_id": self.tender_id,
-            "reference_number": self.reference_number,
-            "org_chain": self.org_chain,
-            "tender_type": self.tender_type,
-            "category": self.category,
-            "tender_title": self.tender_title,
-            "tender_value": self.tender_value,
-            "emd_amount": self.emd_amount,
-            "doc_fee": self.doc_fee,
-            "attachments": [a.to_dict() for a in self.attachments],
-        }
-
-
-class Attachment:
-    __slots__ = ("filename", "doc_type", "description")
-
-    def __init__(
-        self,
-        filename: str | None = None,
-        doc_type: str | None = None,
-        description: str | None = None,
-    ) -> None:
-        self.filename = filename
-        self.doc_type = doc_type
-        self.description = description
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "filename": self.filename,
-            "doc_type": self.doc_type,
-            "description": self.description,
-        }
 
 
 def _clean_text(value: str) -> str:
@@ -140,16 +22,16 @@ def row_locators(page: Page) -> list[Locator]:
     return page.locator(ROWS_SELECTOR).all()
 
 
-def extract_listing_rows(page: Page) -> list[TenderListing]:
-    results: list[TenderListing] = []
+def extract_listing_rows(page: Page) -> list[Tender]:
+    results: list[Tender] = []
     rows = row_locators(page)
     for row in rows:
-        listing = _parse_listing_row(row)
-        results.append(listing)
+        tender = _parse_listing_row(row)
+        results.append(tender)
     return results
 
 
-def _parse_listing_row(row: Locator) -> TenderListing:
+def _parse_listing_row(row: Locator) -> Tender:
     cells = row.locator("td").all()
     total = len(cells)
 
@@ -162,34 +44,39 @@ def _parse_listing_row(row: Locator) -> TenderListing:
     org_chain = _cell_text(cells[5]) if total > 5 else None
 
     title_text = title_ref_raw.strip() if title_ref_raw else None
-    tender_id = None
-    title_ref = None
+    tender_id: str | None = None
+    title: str | None = None
     if title_text:
         id_match = re.search(r"\[([A-Za-z0-9_]+)\]$", title_text)
         if id_match:
             tender_id = id_match.group(1)
-            title_ref = title_text[: id_match.start()].strip()
+            title = title_text[: id_match.start()].strip()
+        else:
+            title = title_text
 
-    detail_url = None
+    detail_url: str | None = None
     if total > 4:
         link = cells[4].locator("a").first
         try:
             href = link.get_attribute("href", timeout=1000)
             if href and not href.startswith("http"):
-                detail_url = "https://eprocure.gov.in" + href if href.startswith("/") else "https://eprocure.gov.in/eprocure/" + href
+                detail_url = (
+                    "https://eprocure.gov.in" + href
+                    if href.startswith("/")
+                    else "https://eprocure.gov.in/eprocure/" + href
+                )
             else:
                 detail_url = href or None
         except Exception:
             detail_url = None
 
-    return TenderListing(
-        sl_no=sl_no,
-        published_date=published_date.strip() if published_date else None,
-        closing_date=closing_date.strip() if closing_date else None,
-        opening_date=opening_date.strip() if opening_date else None,
-        title_ref=title_ref,
+    return Tender(
+        tender_id=tender_id or "",
+        title=title,
+        published_date=published_date.strip() if published_date else None,  # type: ignore[arg-type]
+        closing_date=closing_date.strip() if closing_date else None,  # type: ignore[arg-type]
+        opening_date=opening_date.strip() if opening_date else None,  # type: ignore[arg-type]
         org_chain=org_chain.strip() if org_chain else None,
-        tender_id=tender_id,
         detail_url=detail_url,
     )
 
@@ -216,77 +103,86 @@ def _content_area(page: Page) -> Locator:
     return page.locator("body")
 
 
-def extract_detail_page(page: Page) -> TenderDetail:
+def extract_detail_page(page: Page) -> Tender:
     page.wait_for_selector("table", timeout=15000)
     content = _content_area(page)
-
-    detail = TenderDetail()
 
     try:
         page_text = content.inner_text(timeout=3000)
     except Exception:
         page_text = ""
 
-    detail.tender_id = _regex_find(page_text, r"Tender ID\s+(\S+)")
-    if not detail.tender_id:
-        detail.tender_id = _extract_field_by_label(content, "Tender ID")
+    tender_id = _regex_find(page_text, r"Tender ID\s+(\S+)")
+    if not tender_id:
+        tender_id = _extract_field_by_label(content, "Tender ID")
 
-    detail.reference_number = _regex_find(
+    reference_number = _regex_find(
         page_text, r"Tender Reference Number\s+(.+?)\s+Tender ID"
     )
-    if not detail.reference_number:
-        detail.reference_number = _extract_field_by_label(content, "Tender Reference Number")
+    if not reference_number:
+        reference_number = _extract_field_by_label(content, "Tender Reference Number")
 
-    detail.org_chain = _regex_find(
+    org_chain = _regex_find(
         page_text, r"Organisation Chain\s+(.+?)\s+Tender Reference Number"
     )
-    if not detail.org_chain:
-        detail.org_chain = _extract_field_by_label(content, "Organisation Chain")
+    if not org_chain:
+        org_chain = _extract_field_by_label(content, "Organisation Chain")
 
-    detail.tender_type = _regex_find(
+    tender_type = _regex_find(
         page_text, r"Tender Type\s+(.+?)\s+Form Of Contract"
     )
-    if not detail.tender_type:
-        detail.tender_type = _extract_field_by_label(content, "Tender Type")
+    if not tender_type:
+        tender_type = _extract_field_by_label(content, "Tender Type")
 
-    detail.category = _regex_find(
+    category = _regex_find(
         page_text, r"Tender Category\s+(.+?)\s+No\. of Covers"
     )
-    if not detail.category:
-        detail.category = _extract_field_by_label(content, "Tender Category")
+    if not category:
+        category = _extract_field_by_label(content, "Tender Category")
 
-    detail.tender_title = _regex_find(
+    title = _regex_find(
         page_text, r"Title\s+(.+?)\s+Work Description"
     )
-    if not detail.tender_title:
-        detail.tender_title = _extract_field_by_label(content, "Title")
+    if not title:
+        title = _extract_field_by_label(content, "Title")
 
-    detail.tender_value = _regex_find(page_text, r"Tender Value in \S+\s+(\S+)")
-    if not detail.tender_value:
-        detail.tender_value = _regex_find(page_text, r"Tender Value\s+([\d,]+)")
-    if not detail.tender_value:
-        detail.tender_value = _extract_field_by_label(content, "Tender Value")
+    tender_value = _regex_find(page_text, r"Tender Value in \S+\s+(\S+)")
+    if not tender_value:
+        tender_value = _regex_find(page_text, r"Tender Value\s+([\d,]+)")
+    if not tender_value:
+        tender_value = _extract_field_by_label(content, "Tender Value")
 
-    detail.emd_amount = _regex_find(page_text, r"EMD Amount in \S+\s+([\d,]+)")
-    if not detail.emd_amount:
-        detail.emd_amount = _extract_field_by_label(content, "EMD Amount")
+    emd_amount = _regex_find(page_text, r"EMD Amount in \S+\s+([\d,]+)")
+    if not emd_amount:
+        emd_amount = _extract_field_by_label(content, "EMD Amount")
 
-    detail.doc_fee = _regex_find(page_text, r"Tender Fee in \S+\s+([\d,]+)")
-    if not detail.doc_fee:
-        detail.doc_fee = _regex_find(page_text, r"Tender Fee\s+([\d,]+)")
-    if not detail.doc_fee:
-        detail.doc_fee = _extract_field_by_label(content, "Document Fee")
+    doc_fee = _regex_find(page_text, r"Tender Fee in \S+\s+([\d,]+)")
+    if not doc_fee:
+        doc_fee = _regex_find(page_text, r"Tender Fee\s+([\d,]+)")
+    if not doc_fee:
+        doc_fee = _extract_field_by_label(content, "Document Fee")
 
     attachment_section = _regex_find(
         page_text,
         r"Work Item Documents\s+(.+?)(?:Critical Dates|Tender Inviting Authority)",
     )
     if attachment_section:
-        detail.attachments = _parse_attachment_text(attachment_section)
+        attachments = _parse_attachment_text(attachment_section)
     else:
-        detail.attachments = _extract_attachments(content)
+        attachments = _extract_attachments(content)
 
-    return detail
+    return Tender(
+        tender_id=tender_id or "",
+        title=title,
+        reference_number=reference_number,
+        org_chain=org_chain,
+        tender_type=tender_type,
+        category=category,
+        tender_value=tender_value,  # type: ignore[arg-type]
+        emd_amount=emd_amount,  # type: ignore[arg-type]
+        doc_fee=doc_fee,  # type: ignore[arg-type]
+        attachments=attachments,
+    )
 
 
 def _regex_find(text: str, pattern: str) -> str | None:
@@ -322,7 +218,9 @@ def _extract_field_by_label(scope: Page | Locator, label: str) -> str | None:
             cells = row.locator("td").all()
             if len(cells) < 2:
                 continue
-            first_text = cells[0].inner_text(timeout=500).strip().rstrip(":").lstrip("*").strip()
+            first_text = (
+                cells[0].inner_text(timeout=500).strip().rstrip(":").lstrip("*").strip()
+            )
             if label_lower in first_text.lower():
                 try:
                     raw = cells[1].evaluate(
@@ -361,8 +259,12 @@ def _extract_attachments(scope: Locator) -> list[Attachment]:
             for cell in rows[0].locator("td,th").all() if rows else []:
                 header_texts.append(_clean_text(cell.inner_text(timeout=500).lower()))
 
-            filename_idx = _find_header_index(header_texts, "file name", "document name", "attachment", "title")
-            doctype_idx = _find_header_index(header_texts, "document type", "type", "category")
+            filename_idx = _find_header_index(
+                header_texts, "file name", "document name", "attachment", "title"
+            )
+            doctype_idx = _find_header_index(
+                header_texts, "document type", "type", "category"
+            )
             desc_idx = _find_header_index(header_texts, "description", "details")
 
             if filename_idx is None:
