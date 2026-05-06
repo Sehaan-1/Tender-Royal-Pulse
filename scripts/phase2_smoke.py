@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -22,16 +21,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from playwright.sync_api import Page, sync_playwright
+
 from tender_royal_pulse.portal.eprocure_dom import (
     CLOSING_7DAYS_SELECTOR,
+    PaginationNavigator,
     TenderDetail,
     TenderListing,
-    PaginationNavigator,
-    extract_listing_rows,
     extract_detail_page,
+    extract_listing_rows,
     wait_for_rows,
 )
-from playwright.sync_api import sync_playwright, Page
 
 LISTING_URL = (
     "https://eprocure.gov.in/eprocure/app?page=FrontEndListTendersbyDate&service=page"
@@ -181,7 +181,7 @@ def run_smoke(max_pages: int = 2, detail_sample: int = 5) -> None:
             print(f"    Exported: {jsonl_path} ({len(combined)} records)")
 
             sample_ids = [l.tender_id for l in listings[:5] if l.tender_id]
-            print(f"\n[4] Summary:")
+            print("\n[4] Summary:")
             print(f"    Listings: {len(listings)}")
             print(f"    With tender_id: {len(listing_with_id)}")
             print(f"    Details attempted: {min(len(listings), detail_sample)}")

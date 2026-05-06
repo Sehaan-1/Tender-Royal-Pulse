@@ -1,0 +1,10 @@
+{
+    "run_id": "sample_run_20260506",
+    "timestamp": "2026-05-06T17:17:42.282415",
+    "stats": {
+        "total_processed": 500,
+        "success": 500,
+        "failures": 0,
+        "retries": 12
+    }
+}

@@ -41,3 +41,10 @@ build/
 
 .mypy_cache/
 .ruff_cache/
+
+# Generated test/smoke sample outputs (not curated deliverables)
+samples/sample_outputs/**/*.html
+samples/sample_outputs/**/*.png
+samples/sample_outputs/phase2_live_smoke/
+samples/sample_outputs/tenders.csv
+samples/sample_outputs/tenders.jsonl
