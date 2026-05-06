@@ -28,7 +28,7 @@
 - [Architecture Overview](#-architecture-overview)
 - [Key Features](#-key-features)
 - [Project Structure](#-project-structure)
-- [Data Snapshot](#-data-snapshot)
+- [Data Model](#-data-model)
 - [Reliability Engine](#-reliability-engine)
   - [State Machine](#state-machine)
   - [Heartbeat & Stale Recovery](#heartbeat--stale-recovery)
@@ -55,7 +55,7 @@ The [eProcure (CPPP)](https://etenders.gov.in) portal is one of the most technic
 | **Dynamic JavaScript** | React/JS-rendered tables, no static HTML | Headless browser with explicit DOM-ready waits |
 | **Rate limiting / IP blocks** | Aggressive throttling after burst requests | Adaptive exponential backoff with per-error-class limits |
 | **Mid-run crashes** | Long crawls (hours) interrupted by network drops or OOM | SQLite heartbeat; supervisor re-queues stale tasks automatically |
-| **Duplicate records** | Portal returns overlapping pages across sessions | Idempotent upsert keyed on `(source, tender_id)` |
+| **Duplicate records** | Portal returns overlapping pages across sessions | Idempotent upsert keyed on `UNIQUE(source, tender_id)` |
 | **Pagination drift** | Page numbers shift when new tenders are added | Shard-by-page tasks; each page is an atomic unit with full recovery |
 | **Large datasets** | 50 000+ tenders across hundreds of pages | SQLite task queue with per-page granularity and incremental export |
 
@@ -65,52 +65,51 @@ The [eProcure (CPPP)](https://etenders.gov.in) portal is one of the most technic
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                           CLI  (Typer + Rich)                       │
+│                        CLI  (Typer + Rich)                          │
 │    tenderpulse crawl │ export │ status                              │
 └───────────────────────────────┬─────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    CrawlEngine  /  Task Queue                        │
-│                                                                      │
-│   ┌─────────────┐  claim_task()  ┌─────────────┐  mark_done()      │
-│   │   PENDING   │ ────────────▶  │   RUNNING   │ ──────────▶ DONE  │
+│                    CrawlEngine  /  Task Queue                       │
+│                                                                     │
+│   ┌─────────────┐  claim_task()  ┌─────────────┐  mark_done()     │
+│   │   PENDING   │ ─────────────▶ │   RUNNING   │ ──────────▶ DONE │
 │   └─────────────┘                └──────┬──────┘                   │
-│         ▲  recover_stale_tasks()        │ mark_failed()             │
-│         └─────────────────────────── FAILED_RETRYABLE              │
-│                                         │ (max attempts)            │
+│         ▲  recover_stale_tasks()        │ mark_failed()            │
+│         └────────────────────────── FAILED_RETRYABLE               │
+│                                         │ (max attempts)           │
 │                                    FAILED_PERMANENT                 │
-│                                                                      │
-│   Heartbeat thread writes heartbeat_at every 30 s per active task   │
-└──────────────────┬──────────────────────────┬───────────────────────┘
+│                                                                     │
+│   Heartbeat thread writes heartbeat_at every 30 s per active task  │
+└──────────────────┬──────────────────────────┬──────────────────────┘
                    │                          │
          ┌─────────▼──────────┐   ┌───────────▼────────────┐
          │  Playwright Fetcher │   │  Record & Export Layer  │
          │                    │   │                          │
          │  • List pages      │   │  • upsert_tender()       │
          │  • Detail pages    │   │  • CSV exporter          │
-         │  • Session ctx     │   │  • JSONL exporter        │
+         │  • Session context │   │  • JSONL exporter        │
          │  • Re-auth         │   │  • attachments           │
          └────────────────────┘   └──────────────────────────┘
                    │
          ┌─────────▼──────────┐
-         │   SQLite Database   │
+         │   SQLite Database  │
          │                    │
          │  runs              │
          │  tasks             │
          │  task_attempts     │
          │  tenders           │
-         │  attachments       │
          └────────────────────┘
 ```
 
 **Data flow:**
 
 ```
-JSON Input → Queue (ListPagePayload tasks) → Playwright fetch each page
-    → extract rows → upsert_tender() [idempotent]
+Input JSON → Queue (ListPagePayload tasks) → Playwright fetch each page
+    → extract rows → upsert_tender() [idempotent on UNIQUE(source, tender_id)]
     → on restart: recover_stale_tasks() → re-queue → continue
-    → export: tenders + attachments → CSV / JSONL
+    → export: tenders → CSV / JSONL
 ```
 
 ---
@@ -121,14 +120,16 @@ JSON Input → Queue (ListPagePayload tasks) → Playwright fetch each page
 |---------|---------|
 | 🤖 **Headless Browser Scraping** | Playwright-powered; handles JavaScript, session cookies, ASP.NET state |
 | 🔄 **Crash Recovery** | Heartbeat per task; stale detection & automatic re-queue on restart |
-| ♻️ **Idempotent Upserts** | `(source, tender_id)` unique key prevents duplicate records across runs |
-| 📦 **Typed Data Models** | Full Pydantic v2 schema for `TenderRecord`, `SessionContext`, task payloads |
-| 🏷️ **9-Bucket Retry Taxonomy** | Per-error-class max attempts and backoff — not a one-size-fits-all retry |
+| ♻️ **Idempotent Upserts** | `UNIQUE(source, tender_id)` prevents duplicate records across runs |
+| 📦 **Rich Typed Data Models** | Pydantic v2 `Tender`, `Attachment`, `TenderMeta`, `RunSummary`, `ErrorEvent` |
+| 🏷️ **9-Bucket Retry Taxonomy** | Per-error-class max attempts and exponential backoff |
+| 💱 **Indian Money Normalization** | Parses ₹/Rs/INR, lakh/crore groupings → `Decimal` |
+| 📅 **Date Normalization** | Handles Indian date formats → `datetime` |
 | 📊 **Dual Export** | CSV (for analysts) and JSONL (for BigQuery / streaming pipelines) |
 | 🛡️ **Strict Type Safety** | `mypy --strict` passes; zero `Any` leakage in production paths |
 | 🔍 **Ruff Linting** | E, F, I, N, W, UP rule sets enforced in CI |
-| 🧪 **Integration Tests** | Full crash-recovery end-to-end test suite with 12+ passing tests |
-| 📋 **Rich CLI** | `crawl`, `export`, `status` commands with progress bars via Rich |
+| 🧪 **Comprehensive Tests** | Unit tests (6 files) + integration crash-recovery E2E suite |
+| 📋 **Rich CLI** | `crawl`, `export`, `status` commands with progress tables via Rich |
 
 ---
 
@@ -138,85 +139,130 @@ JSON Input → Queue (ListPagePayload tasks) → Playwright fetch each page
 tenderpulse/
 │
 ├── src/
-│   ├── tender_royal_pulse/          # Main package
-│   │   ├── cli.py                   # Typer CLI entry point
-│   │   ├── models.py                # Pydantic data models (TenderRecord, etc.)
-│   │   ├── session_context.py       # ASP.NET session state management
-│   │   │
-│   │   ├── crawler/
-│   │   │   ├── engine.py            # CrawlEngine – orchestrates task lifecycle
-│   │   │   ├── queue.py             # SQLite task queue & state machine
-│   │   │   └── retry.py            # 9-bucket error classification + backoff
-│   │   │
-│   │   ├── portal/
-│   │   │   └── eprocure_dom.py     # Playwright DOM fetcher (list + detail pages)
-│   │   │
-│   │   ├── db/                     # SQLite schema, migrations, upsert logic
-│   │   ├── exporters/              # CSV and JSONL exporters
-│   │   ├── normalization/          # Field cleaning and standardization
-│   │   ├── monitoring/             # Heartbeat thread management
-│   │   └── reporters/              # Rich progress reporters
-│   │
-│   └── tenderpulse/                # Legacy alias package
+│   └── tender_royal_pulse/          # Main package (pip install name: tender-royal-pulse)
+│       ├── __init__.py
+│       ├── cli.py                   # Typer CLI — crawl, export, status commands
+│       ├── cli_helpers.py           # Shared helpers: load_input_json, resolve_db, build_row_processor
+│       ├── models.py                # Pydantic v2 models: Tender, Attachment, TenderMeta,
+│       │                            #   RunSummary, ErrorEvent
+│       ├── session_context.py       # ASP.NET session state (SessionContext Pydantic model)
+│       │
+│       ├── crawler/
+│       │   ├── engine.py            # CrawlEngine — orchestrates task lifecycle
+│       │   ├── queue.py             # SQLite task queue & state machine; upsert_tender()
+│       │   └── retry.py             # 9-bucket error classification + backoff schedules
+│       │
+│       ├── portal/
+│       │   └── eprocure_dom.py      # Playwright DOM fetcher: extract_listing_rows(),
+│       │                            #   extract_detail_page(), PaginationNavigator
+│       │
+│       ├── db/
+│       │   ├── engine.py            # DB connection helpers
+│       │   └── schema.py            # DDL: initialize_schema(), all CREATE TABLE statements
+│       │
+│       ├── exporters/
+│       │   ├── csv.py               # CSVExporter
+│       │   └── jsonl.py             # JSONLExporter
+│       │
+│       ├── normalization/
+│       │   ├── dates.py             # parse_date(), parse_datetime() — Indian date formats
+│       │   ├── money.py             # parse_indian_money() — ₹/Rs/INR + lakh/crore groupings
+│       │   └── text.py              # clean_text() — whitespace & encoding cleanup
+│       │
+│       ├── monitoring/
+│       │   └── logging.py           # Heartbeat thread management & structured logging
+│       │
+│       └── reporters/
+│           └── run_summary.py       # Rich progress reporter for crawl runs
 │
 ├── tests/
-│   ├── unit/                       # Fast unit tests (no I/O)
-│   └── integration/
-│       └── test_crash_recovery.py  # Crash & stale recovery E2E tests
+│   ├── conftest.py                  # Shared pytest fixtures
+│   ├── fixtures/
+│   │   └── html/                   # listing_page.html, detail_page.html for integration tests
+│   │
+│   ├── unit/                        # Fast unit tests — no I/O, no browser
+│   │   ├── test_error_classifier.py # 9-bucket error classification
+│   │   ├── test_models_invariants.py# Tender / Attachment Pydantic invariants
+│   │   ├── test_normalization_dates.py
+│   │   ├── test_normalization_money.py
+│   │   ├── test_queue.py            # SQLite task queue state transitions
+│   │   └── test_retry_policy.py     # Backoff schedules & max-attempts enforcement
+│   │
+│   ├── integration/
+│   │   └── test_crash_recovery.py  # Crash & stale recovery E2E tests (requires SQLite)
+│   │
+│   ├── test_exporters.py           # CSV / JSONL exporter correctness
+│   ├── test_portal_parser.py       # Playwright DOM extraction (marked integration)
+│   └── test_state_machine.py       # SessionContext model tests
 │
 ├── docs/
 │   ├── architecture.md             # Component diagram & data flow
 │   ├── data_contract.md            # SQLite schema & Pydantic field spec
-│   ├── test_plan.md                # Testing strategy & gates
+│   ├── test_plan.md                # Testing strategy & CI gates
 │   ├── portal_analysis.md          # eProcure portal reverse-engineering notes
 │   └── adr/                        # Architecture Decision Records
+│       ├── 0001-single-worker.md
+│       ├── 0002-playwright-sync.md
+│       └── 0003-session-bound-urls.md
 │
-├── samples/
-│   └── sample_outputs/
-│       └── main_dataset/
-│           ├── tenders.csv         # ~1 000 sample tender rows
-│           ├── tenders.jsonl       # JSONL equivalent
-│           └── attachments.csv     # ~3 000 attachment rows
-│
-├── scripts/                        # Helper scripts
-├── reports/                        # Coverage & audit reports
-├── Makefile                        # Developer shortcuts
-└── pyproject.toml                  # Build config, deps, ruff, mypy settings
+├── samples/                         # Sample outputs for local dev
+├── scripts/                         # Helper scripts (e.g. build_main_dataset.py)
+├── reports/                         # Coverage & audit reports
+├── Makefile                         # Developer shortcuts
+└── pyproject.toml                   # Build config, deps, ruff, mypy, pytest settings
 ```
 
 ---
 
-## 📊 Data Snapshot
+## 📊 Data Model
 
-**Sample dataset (bundled in `samples/`):**
-
-| File | Rows | Size |
-|------|-----:|-----:|
-| `tenders.csv` | ~1 000 | ~106 KB |
-| `tenders.jsonl` | ~1 000 | ~160 KB |
-| `attachments.csv` | ~3 000 | ~50 KB |
-
-**Sample `tenders.csv` rows:**
-
-```csv
-"tender_id","title","org_chain","closing_date","value","status"
-"TEND-1000","Tender for Supply of Goods 0","Central Govt > Ministry of Commerce > Department of Trade","2026-05-13","4066116","Open"
-"TEND-1001","Tender for Supply of Goods 1","Central Govt > Ministry of Commerce > Department of Trade","2026-05-13","4768494","Awarded"
-"TEND-1002","Tender for Supply of Goods 2","Central Govt > Ministry of Commerce > Department of Trade","2026-05-15","3967549","Closed"
-```
-
-**Full `TenderRecord` Pydantic schema:**
+### `Tender` — the canonical record
 
 ```python
-class TenderRecord(BaseModel):
-    tender_id:    str            # Durable key — survives session expiry
-    title:        str
-    closing_date: str | None
-    opening_date: str | None
-    direct_link:  str | None     # Ephemeral session URL (debug only)
-    fetched_at:   datetime
+class Tender(BaseModel):
+    source:           str           # default "eprocure"
+    tender_id:        str           # durable key — survives session expiry
+    title:            str | None
+    reference_number: str | None
+    org_chain:        str | None    # "Ministry > Dept > SubDept > Unit"
+    tender_type:      str | None
+    category:         str | None
+    tender_value:     Decimal | None  # normalized via parse_indian_money()
+    emd_amount:       Decimal | None
+    doc_fee:          Decimal | None
+    currency:         str           # default "INR"
+    closing_date:     datetime | None
+    opening_date:     datetime | None
+    published_date:   datetime | None
+    detail_url:       str | None    # ephemeral session URL (debug only)
+    attachments:      list[Attachment]
+    meta:             TenderMeta | None
+    raw_json:         dict | None
+```
 
-    model_config = ConfigDict(extra="forbid")
+Auto-normalizes on construction: Indian money strings → `Decimal`, Indian date strings → `datetime`, text fields stripped via `clean_text()`.
+
+### `Attachment`
+
+```python
+class Attachment(BaseModel):
+    filename:    str
+    doc_type:    str | None
+    description: str | None
+    url:         str | None
+```
+
+### `TenderMeta`
+
+```python
+class TenderMeta(BaseModel):
+    run_id:        str | None
+    task_id:       str | None
+    fetched_at:    datetime | None
+    fetcher_used:  str   # "eprocure_dom.playwright"
+    parse_version: str   # "1.0.0"
+    page_index:    int | None
+    row_index:     int | None
 ```
 
 ---
@@ -228,13 +274,13 @@ class TenderRecord(BaseModel):
 Every crawl page is an atomic **task** with a strict lifecycle enforced by the SQLite queue:
 
 ```
-   ┌───────────┐  claim_task()  ┌───────────┐  mark_done()
-   │  PENDING  │──────────────▶ │  RUNNING  │─────────────▶  DONE ✅
+   ┌───────────┐  claim_task()  ┌───────────┐  mark_task_done()
+   │  PENDING  │──────────────▶ │  RUNNING  │──────────────────▶  DONE ✅
    └───────────┘                └─────┬─────┘
-         ▲                            │  mark_failed()
+         ▲                            │  mark_task_failed_retryable()
          │  recover_stale_tasks()     ▼
          │  (heartbeat expired) FAILED_RETRYABLE 🔁
-         │                            │  (max attempts reached)
+         │                            │  (attempt_count >= max_attempts)
          └────────────────────────────┘
                                       ▼
                               FAILED_PERMANENT ❌
@@ -243,46 +289,26 @@ Every crawl page is an atomic **task** with a strict lifecycle enforced by the S
 | State | Meaning | Transitions To |
 |-------|---------|----------------|
 | `PENDING` | Queued, not started | `RUNNING` |
-| `RUNNING` | Actively processing | `DONE`, `FAILED_RETRYABLE`, `FAILED_PERMANENT`, `STALE` |
+| `RUNNING` | Actively processing | `DONE`, `FAILED_RETRYABLE`, `FAILED_PERMANENT` |
 | `DONE` | Successfully completed | — |
-| `FAILED_RETRYABLE` | Transient failure (timeout, 429, network) | `RUNNING`, `FAILED_PERMANENT` |
-| `FAILED_PERMANENT` | Unrecoverable (401, bad input) | — |
-| `STALE` | Heartbeat expired; process presumed dead | `PENDING` (auto-recovered) |
-| `SKIPPED` | Deduplication or user-skip | — |
+| `FAILED_RETRYABLE` | Transient failure (timeout, 429, network) | `RUNNING` (retry), `FAILED_PERMANENT` |
+| `FAILED_PERMANENT` | Unrecoverable (auth failure, bad input) | — |
 
 ---
 
 ### Heartbeat & Stale Recovery
 
-Each task runs a **background heartbeat thread** writing `heartbeat_at = now()` to SQLite every 30 seconds. On the next `CrawlEngine` startup, `recover_stale_tasks()` scans for tasks where `heartbeat_at < now() - threshold AND state = 'RUNNING'` and resets them to `PENDING`. **No human intervention required.**
+Each active task updates `heartbeat_at = now()` in SQLite every **30 seconds** via a background thread. On the next `CrawlEngine` startup, `recover_stale_tasks()` queries:
 
-**Integration test results:**
-
+```sql
+SELECT * FROM tasks
+WHERE run_id = ?
+  AND status = 'RUNNING'
+  AND heartbeat_at < <now - threshold>
+  AND attempt_count < max_attempts
 ```
-$ python -m pytest tests/integration/test_crash_recovery.py -v
 
-TestStaleRecovery
-    test_stale_heartbeat_recovered_to_pending ........... PASSED
-    test_fresh_heartbeat_not_recovered .................. PASSED
-    test_stale_task_at_max_attempts_not_recovered ....... PASSED
-    test_multiple_stale_tasks_recovered ................. PASSED
-
-TestIdempotentUpsert
-    test_insert_new_tender .............................. PASSED
-    test_upsert_updates_existing ........................ PASSED
-    test_unique_constraint_prevents_duplicates .......... PASSED
-    test_different_sources_same_tender_id ............... PASSED
-
-TestCrashRecoveryFlow
-    test_full_run_completes_with_no_duplicates .......... PASSED
-    test_idempotence_on_reprocessing .................... PASSED
-
-TestEngineExecuteSingleTask
-    test_single_task_executes_to_done ................... PASSED
-
-TestStaleRecoveryEndToEnd
-    test_engine_recovers_and_completes .................. PASSED
-```
+Stale tasks are reset to `PENDING` and re-processed. **No human intervention required.**
 
 ---
 
@@ -314,21 +340,20 @@ Every attempt is persisted in `task_attempts` for forensic debugging.
 pip install -e ".[dev]"
 playwright install chromium
 
-# 2 — Run tests (unit only, no browser required)
+# 2 — Run unit tests (no browser required)
 python -m pytest -m "not integration" -q
+
+# 3 — Lint + type check
 ruff check . && mypy src/
 
-# 3 — Generate a sample dataset
-python scripts/build_main_dataset.py
+# 4 — Run a sample crawl (mock mode)
+make run
 
-# 4 — Export the sample to CSV and JSONL
-python -m tender_royal_pulse.cli export \
-    --db data/tenderpulse.db \
-    --output exports/tenders.jsonl \
-    --format jsonl
+# 5 — Export to JSONL
+make export
 ```
 
-> **Note:** The `crawl` command requires a live Playwright session with eProcure credentials. Use the sample data in `samples/` for local development.
+> **Note:** The `crawl` command requires a live Playwright session with eProcure credentials. Use `make run` with `samples/INPUT.example.json` for local development.
 
 ---
 
@@ -356,7 +381,8 @@ pip install -e ".[dev]"
 playwright install chromium
 
 # 5 — Verify
-python -m tender_royal_pulse.cli --help
+tenderpulse --help
+# or: python -m tender_royal_pulse.cli --help
 ```
 
 ---
@@ -366,10 +392,14 @@ python -m tender_royal_pulse.cli --help
 ### Crawl tenders
 
 ```bash
-python -m tender_royal_pulse.cli crawl \
+tenderpulse crawl \
     --input  samples/INPUT.example.json \
     --db     data/tenderpulse.db \
-    --output data/tenders.csv
+    --output data/tenders.csv \
+    --format csv
+
+# Limit to 5 pages (for testing)
+tenderpulse crawl --input samples/INPUT.example.json --db data/tenderpulse.db --limit 5
 ```
 
 **Minimal `INPUT.example.json`:**
@@ -389,18 +419,27 @@ python -m tender_royal_pulse.cli crawl \
 
 ```bash
 # JSONL — BigQuery / streaming pipelines
-python -m tender_royal_pulse.cli export \
-    --db data/tenderpulse.db --output exports/tenders.jsonl --format jsonl
+tenderpulse export --db data/tenderpulse.db --output exports/tenders.jsonl --format jsonl
 
 # CSV — Excel / analysis
-python -m tender_royal_pulse.cli export \
-    --db data/tenderpulse.db --output exports/tenders.csv --format csv
+tenderpulse export --db data/tenderpulse.db --output exports/tenders.csv --format csv
 ```
 
 ### Check crawl status
 
 ```bash
-python -m tender_royal_pulse.cli status --db data/tenderpulse.db
+tenderpulse status --db data/tenderpulse.db
+```
+
+Output (Rich table):
+
+```
+            Recent Crawl Runs
+┌──────────┬─────────┬─────────────────────┬───────┬──────┬─────────┬────────┐
+│ Run ID   │ Status  │ Started             │ Total │ Done │ Pending │ Failed │
+├──────────┼─────────┼─────────────────────┼───────┼──────┼─────────┼────────┤
+│ a1b2c3d4 │ running │ 2026-05-07 01:00:00 │    10 │    8 │       1 │      1 │
+└──────────┴─────────┴─────────────────────┴───────┴──────┴─────────┴────────┘
 ```
 
 ---
@@ -408,22 +447,37 @@ python -m tender_royal_pulse.cli status --db data/tenderpulse.db
 ## 🧪 Testing
 
 ```bash
-# Full suite with coverage
-python -m pytest
-
-# Fast unit tests only (no browser, no DB I/O)
+# Unit tests only — fast, no browser, no DB I/O
 python -m pytest -m "not integration" -q
 
-# Crash-recovery integration tests
-python -m pytest tests/integration/test_crash_recovery.py -v
+# Full suite with coverage
+make test
+
+# Integration tests — requires SQLite (no browser)
+python -m pytest tests/integration/ -v
+
+# Portal parser tests — requires Playwright + HTML fixtures
+python -m pytest tests/test_portal_parser.py -v
 
 # Lint + type check (mirrors CI)
 ruff check .
 mypy src/
-
-# All-in-one shortcut
-make test
 ```
+
+### Test suite overview
+
+| Module | Tests | Category |
+|--------|-------|----------|
+| `tests/unit/test_error_classifier.py` | Error bucket classification | Unit |
+| `tests/unit/test_models_invariants.py` | Pydantic model constraints | Unit |
+| `tests/unit/test_normalization_dates.py` | Indian date parsing | Unit |
+| `tests/unit/test_normalization_money.py` | Indian money parsing | Unit |
+| `tests/unit/test_queue.py` | SQLite state machine | Unit |
+| `tests/unit/test_retry_policy.py` | Backoff & max-attempts | Unit |
+| `tests/integration/test_crash_recovery.py` | Crash + stale recovery E2E | Integration |
+| `tests/test_exporters.py` | CSV / JSONL escaping & validity | Unit |
+| `tests/test_state_machine.py` | `SessionContext` model | Unit |
+| `tests/test_portal_parser.py` | DOM extraction via Playwright | Integration |
 
 ---
 
@@ -431,11 +485,17 @@ make test
 
 | Command | Description |
 |---------|-------------|
-| `make test` | Full test suite with coverage report |
-| `make run` | Sample crawl using mock input |
-| `make export` | Export the sample SQLite DB to JSONL |
-| `make lint` | `ruff check .` |
+| `make test` | Full test suite with coverage (`--cov=src`) |
+| `make test-all` | Full suite verbose (`-v`) |
+| `make test-unit` | Unit tests only (`-m "not integration"`) |
+| `make test-integration` | Integration tests only |
+| `make run` | Sample crawl via mock input JSON |
+| `make export` | Export sample SQLite DB → JSONL |
+| `make lint` | `ruff check src tests` |
 | `make typecheck` | `mypy src/` |
+| `make fmt` | `ruff format src tests` |
+| `make clean` | Remove `__pycache__`, `.pytest_cache`, build artifacts |
+| `make clean-win` | Same as `clean` but PowerShell-compatible |
 
 ---
 
@@ -444,42 +504,72 @@ make test
 ```sql
 -- One row per crawl session
 CREATE TABLE runs (
-    id TEXT PRIMARY KEY, started_at TEXT, ended_at TEXT, status TEXT
+    id         TEXT PRIMARY KEY,
+    status     TEXT NOT NULL DEFAULT 'running',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 -- Core task queue (one row per page)
 CREATE TABLE tasks (
-    id            TEXT PRIMARY KEY,
-    task_type     TEXT,         -- listing_fetch | detail_fetch | export
-    state         TEXT,         -- PENDING | RUNNING | DONE | ...
-    payload       TEXT,         -- JSON-encoded payload
-    attempt       INTEGER DEFAULT 0,
-    error_class   TEXT,         -- 9-bucket classification
-    error_message TEXT,
-    heartbeat_at  TEXT,         -- updated every 30 s
-    created_at    TEXT,
-    updated_at    TEXT
+    id                   TEXT PRIMARY KEY,
+    run_id               TEXT NOT NULL REFERENCES runs(id),
+    task_type            TEXT NOT NULL,          -- LIST_PAGE
+    status               TEXT NOT NULL DEFAULT 'PENDING',
+    attempt_count        INTEGER NOT NULL DEFAULT 0,
+    max_attempts         INTEGER NOT NULL DEFAULT 3,
+    heartbeat_at         TEXT,                   -- updated every 30 s
+    error_class          TEXT,                   -- 9-bucket classification
+    last_error           TEXT,
+    payload_json         TEXT NOT NULL,          -- JSON-encoded ListPagePayload
+    session_context_json TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
 );
 
 -- Full audit trail of every attempt
 CREATE TABLE task_attempts (
-    id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(id),
-    attempt INTEGER, error_class TEXT, error_message TEXT,
-    started_at TEXT, ended_at TEXT
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id        TEXT NOT NULL REFERENCES tasks(id),
+    attempt_number INTEGER NOT NULL,
+    status         TEXT NOT NULL,
+    error_class    TEXT,
+    error_message  TEXT,
+    started_at     TEXT,
+    finished_at    TEXT
 );
 
 -- Canonical tender records — idempotent via UNIQUE(source, tender_id)
 CREATE TABLE tenders (
-    tender_id TEXT, source TEXT, title TEXT,
-    closing_date TEXT, opening_date TEXT, direct_link TEXT, fetched_at TEXT,
-    PRIMARY KEY (tender_id, source)
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    source           TEXT NOT NULL DEFAULT 'eprocure',
+    tender_id        TEXT NOT NULL,
+    title            TEXT,
+    reference_number TEXT,
+    org_chain        TEXT,
+    tender_type      TEXT,
+    category         TEXT,
+    tender_value     TEXT,      -- stored as Decimal string
+    emd_amount       TEXT,
+    doc_fee          TEXT,
+    closing_date     TEXT,      -- ISO 8601
+    opening_date     TEXT,
+    published_date   TEXT,
+    detail_url       TEXT,
+    raw_json         TEXT,      -- full raw JSON blob
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    UNIQUE(source, tender_id)
 );
+```
 
--- Documents / files linked to each tender
-CREATE TABLE attachments (
-    id TEXT PRIMARY KEY, tender_id TEXT REFERENCES tenders(tender_id),
-    filename TEXT, url TEXT, size_bytes INTEGER
-);
+**Indexes** (auto-created by `initialize_schema()`):
+
+```sql
+CREATE INDEX idx_tasks_run_id     ON tasks(run_id);
+CREATE INDEX idx_tasks_status     ON tasks(status);
+CREATE INDEX idx_tasks_heartbeat  ON tasks(heartbeat_at);
+CREATE INDEX idx_task_attempts_task_id ON task_attempts(task_id);
 ```
 
 ---
@@ -492,7 +582,9 @@ CREATE TABLE attachments (
 | [`docs/data_contract.md`](docs/data_contract.md) | SQLite schema, Pydantic models, state machine spec |
 | [`docs/test_plan.md`](docs/test_plan.md) | Testing strategy, coverage gates, CI requirements |
 | [`docs/portal_analysis.md`](docs/portal_analysis.md) | eProcure portal reverse-engineering notes |
-| [`docs/adr/`](docs/adr/) | Architecture Decision Records |
+| [`docs/adr/0001-single-worker.md`](docs/adr/0001-single-worker.md) | ADR: Single-worker architecture |
+| [`docs/adr/0002-playwright-sync.md`](docs/adr/0002-playwright-sync.md) | ADR: Playwright sync API choice |
+| [`docs/adr/0003-session-bound-urls.md`](docs/adr/0003-session-bound-urls.md) | ADR: Session-bound URL handling |
 
 ---
 
@@ -504,7 +596,7 @@ CREATE TABLE attachments (
 | **No CAPTCHA bypass** | Crawler **stops** and surfaces `SELECTOR_DRIFT` if a CAPTCHA is detected |
 | **Public data only** | Only government-published procurement data visible without credentials |
 | **Robots.txt** | Respected — do not scale beyond reasonable limits |
-| **Use sample data first** | Bundled `samples/` covers ~1 000 tenders; use for development before live runs |
+| **Use sample data first** | Use `samples/` and `make run` for development before live runs |
 | **No PII** | No Personally Identifiable Information is collected or stored |
 
 ---
