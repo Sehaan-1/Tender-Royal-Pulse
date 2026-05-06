@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from tender_royal_pulse.crawler.engine import CrawlEngine, execute_list_page_task
 from tender_royal_pulse.crawler.queue import (
     ListPagePayload,
-    Task,
     TaskStatus,
     _task_from_row,
     claim_task,
@@ -21,18 +19,19 @@ from tender_royal_pulse.crawler.queue import (
     upsert_tender,
 )
 from tender_royal_pulse.db.schema import initialize_schema
+from tender_royal_pulse.models import Tender
 
 
-def _build_tender_row(task_id: str, page_index: int, row_index: int) -> dict[str, Any]:
-    return {
-        "source": "test",
-        "tender_id": f"task-{task_id[-8:]}-p{page_index}-r{row_index}",
-        "title": f"Tender {page_index}-{row_index}",
-        "reference_number": f"REF-{page_index}-{row_index}",
-        "org_chain": "Test Org / Dept",
-        "closing_date": "2026-06-15",
-        "opening_date": "2026-06-16",
-    }
+def _build_tender(task_id: str, page_index: int, row_index: int) -> Tender:
+    return Tender(
+        source="test",
+        tender_id=f"task-{task_id[-8:]}-p{page_index}-r{row_index}",
+        title=f"Tender {page_index}-{row_index}",
+        reference_number=f"REF-{page_index}-{row_index}",
+        org_chain="Test Org / Dept",
+        closing_date="2026-06-15",
+        opening_date="2026-06-16",
+    )
 
 
 @pytest.fixture
@@ -137,10 +136,8 @@ class TestStaleRecovery:
 class TestIdempotentUpsert:
     def test_insert_new_tender(self, fresh_db: sqlite3.Connection) -> None:
         conn = fresh_db
-        inserted = upsert_tender(
-            conn, source="test", tender_id="T001",
-            title="Test Tender", closing_date="2026-06-15",
-        )
+        tender = Tender(source="test", tender_id="T001", title="Test Tender", closing_date="2026-06-15")
+        inserted = upsert_tender(conn, tender)
         assert inserted is True
 
         cursor = conn.execute("SELECT * FROM tenders WHERE tender_id = ?", ("T001",))
@@ -150,14 +147,8 @@ class TestIdempotentUpsert:
 
     def test_upsert_updates_existing(self, fresh_db: sqlite3.Connection) -> None:
         conn = fresh_db
-        upsert_tender(
-            conn, source="test", tender_id="T001",
-            title="Original Title",
-        )
-        updated = upsert_tender(
-            conn, source="test", tender_id="T001",
-            title="Updated Title",
-        )
+        upsert_tender(conn, Tender(source="test", tender_id="T001", title="Original Title"))
+        updated = upsert_tender(conn, Tender(source="test", tender_id="T001", title="Updated Title"))
         assert not updated
 
         cursor = conn.execute("SELECT * FROM tenders WHERE tender_id = ?", ("T001",))
@@ -166,8 +157,8 @@ class TestIdempotentUpsert:
 
     def test_unique_constraint_prevents_duplicates(self, fresh_db: sqlite3.Connection) -> None:
         conn = fresh_db
-        upsert_tender(conn, source="test", tender_id="T001", title="First")
-        upsert_tender(conn, source="test", tender_id="T001", title="Second")
+        upsert_tender(conn, Tender(source="test", tender_id="T001", title="First"))
+        upsert_tender(conn, Tender(source="test", tender_id="T001", title="Second"))
 
         cursor = conn.execute(
             "SELECT COUNT(*) as cnt FROM tenders WHERE source = ? AND tender_id = ?",
@@ -177,8 +168,8 @@ class TestIdempotentUpsert:
 
     def test_different_sources_same_tender_id(self, fresh_db: sqlite3.Connection) -> None:
         conn = fresh_db
-        upsert_tender(conn, source="src_a", tender_id="T001", title="A")
-        upsert_tender(conn, source="src_b", tender_id="T001", title="B")
+        upsert_tender(conn, Tender(source="src_a", tender_id="T001", title="A"))
+        upsert_tender(conn, Tender(source="src_b", tender_id="T001", title="B"))
 
         cursor = conn.execute("SELECT COUNT(*) as cnt FROM tenders")
         assert cursor.fetchone()["cnt"] == 2
@@ -186,26 +177,6 @@ class TestIdempotentUpsert:
 
 class TestCrashRecoveryFlow:
     ROWS_PER_PAGE = 3
-
-    def _make_row_processor(
-        self, task_id: str, page_index: int, rows: list[dict[str, Any]]
-    ) -> Any:
-        def _processor(row_index: int, conn: sqlite3.Connection) -> dict | None:
-            if row_index >= len(rows):
-                return None
-            row = rows[row_index]
-            upsert_tender(
-                conn,
-                source=row.get("source", "test"),
-                tender_id=row["tender_id"],
-                title=row.get("title"),
-                reference_number=row.get("reference_number"),
-                org_chain=row.get("org_chain"),
-                closing_date=row.get("closing_date"),
-                opening_date=row.get("opening_date"),
-            )
-            return row
-        return _processor
 
     def test_full_run_completes_with_no_duplicates(self, tmp_path: Path) -> None:
         db_path = str(tmp_path / "recovery_test.db")
@@ -223,29 +194,13 @@ class TestCrashRecoveryFlow:
         tasks = create_tasks(conn, run_id, payloads)
         conn.close()
 
-        all_rows: dict[str, list[dict[str, Any]]] = {}
+        all_tenders: dict[str, list[Tender]] = {}
         for t in tasks:
-            rows = [
-                _build_tender_row(t.id, t.payload.page_index, ri)
+            tenders = [
+                _build_tender(t.id, t.payload.page_index, ri)
                 for ri in range(self.ROWS_PER_PAGE)
             ]
-            all_rows[t.id] = rows
-
-        def build_processor(task: Task) -> Any:
-            t_rows = all_rows[task.id]
-
-            def proc(row_index: int, conn: sqlite3.Connection) -> dict | None:
-                if row_index >= len(t_rows):
-                    return None
-                return t_rows[row_index]
-            return proc
-
-        engine = CrawlEngine(
-            db_path=db_path,
-            row_processor=lambda ri, c: None,
-            heartbeat_interval=0.5,
-            stale_timeout_seconds=5.0,
-        )
+            all_tenders[t.id] = tenders
 
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -257,17 +212,8 @@ class TestCrashRecoveryFlow:
         )
         conn.commit()
 
-        for row_data in all_rows[task0.id]:
-            upsert_tender(
-                conn,
-                source="test",
-                tender_id=row_data["tender_id"],
-                title=row_data["title"],
-                reference_number=row_data["reference_number"],
-                org_chain=row_data["org_chain"],
-                closing_date=row_data["closing_date"],
-                opening_date=row_data["opening_date"],
-            )
+        for tender in all_tenders[task0.id]:
+            upsert_tender(conn, tender)
 
         task1 = tasks[1]
         conn.execute(
@@ -277,21 +223,17 @@ class TestCrashRecoveryFlow:
         )
         conn.commit()
 
-        partial_rows_1 = all_rows[task1.id][:1]
-        for row_data in partial_rows_1:
-            upsert_tender(
-                conn,
-                source="test",
-                tender_id=row_data["tender_id"],
-                title=row_data["title"],
-                reference_number=row_data["reference_number"],
-                org_chain=row_data["org_chain"],
-                closing_date=row_data["closing_date"],
-                opening_date=row_data["opening_date"],
-            )
+        for tender in all_tenders[task1.id][:1]:
+            upsert_tender(conn, tender)
 
         conn.close()
 
+        engine = CrawlEngine(
+            db_path=db_path,
+            row_processor=lambda ri, c: None,
+            heartbeat_interval=0.5,
+            stale_timeout_seconds=5.0,
+        )
         recovered = engine.recover_stale(run_id)
         assert len(recovered) == 1
         assert recovered[0].id == task1.id
@@ -316,17 +258,8 @@ class TestCrashRecoveryFlow:
             )
             conn.commit()
 
-            for row_data in all_rows[task.id]:
-                upsert_tender(
-                    conn,
-                    source="test",
-                    tender_id=row_data["tender_id"],
-                    title=row_data["title"],
-                    reference_number=row_data["reference_number"],
-                    org_chain=row_data["org_chain"],
-                    closing_date=row_data["closing_date"],
-                    opening_date=row_data["opening_date"],
-                )
+            for tender in all_tenders[task.id]:
+                upsert_tender(conn, tender)
 
         conn.close()
 
@@ -362,12 +295,7 @@ class TestCrashRecoveryFlow:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             for tid in tender_ids:
-                upsert_tender(
-                    conn,
-                    source="test",
-                    tender_id=tid,
-                    title=f"Round {_round} - {tid}",
-                )
+                upsert_tender(conn, Tender(source="test", tender_id=tid, title=f"Round {_round} - {tid}"))
             conn.close()
 
         conn = sqlite3.connect(db_path)
@@ -398,13 +326,13 @@ class TestEngineExecuteSingleTask:
 
         row_count = 0
 
-        def mock_processor(row_index: int, conn: sqlite3.Connection) -> dict | None:
+        def mock_processor(row_index: int, conn: sqlite3.Connection) -> Tender | None:
             nonlocal row_count
             if row_count >= 3:
                 return None
-            result = _build_tender_row(task_id, 0, row_count)
+            tender = _build_tender(task_id, 0, row_count)
             row_count += 1
-            return result
+            return tender
 
         conn2 = sqlite3.connect(db_path)
         conn2.row_factory = sqlite3.Row
@@ -443,10 +371,10 @@ class TestStaleRecoveryEndToEnd:
         tasks = create_tasks(conn, run_id, payloads)
         conn.close()
 
-        task_rows: dict[str, list[dict[str, Any]]] = {}
+        task_tenders: dict[str, list[Tender]] = {}
         for t in tasks:
-            task_rows[t.id] = [
-                _build_tender_row(t.id, t.payload.page_index, ri)
+            task_tenders[t.id] = [
+                _build_tender(t.id, t.payload.page_index, ri)
                 for ri in range(rows_per_task)
             ]
 
@@ -454,16 +382,8 @@ class TestStaleRecoveryEndToEnd:
         conn.row_factory = sqlite3.Row
 
         claim_task(conn, tasks[0].id)
-        for row_data in task_rows[tasks[0].id]:
-            upsert_tender(
-                conn, source="test",
-                tender_id=row_data["tender_id"],
-                title=row_data["title"],
-                reference_number=row_data["reference_number"],
-                org_chain=row_data["org_chain"],
-                closing_date=row_data["closing_date"],
-                opening_date=row_data["opening_date"],
-            )
+        for tender in task_tenders[tasks[0].id]:
+            upsert_tender(conn, tender)
         mark_task_done(conn, tasks[0].id)
 
         conn.execute(
@@ -497,16 +417,8 @@ class TestStaleRecoveryEndToEnd:
             assert status == "PENDING", f"Task {tid} should be PENDING, got {status}"
 
         for tid in recovered_ids:
-            for row_data in task_rows[tid]:
-                upsert_tender(
-                    conn, source="test",
-                    tender_id=row_data["tender_id"],
-                    title=row_data["title"],
-                    reference_number=row_data["reference_number"],
-                    org_chain=row_data["org_chain"],
-                    closing_date=row_data["closing_date"],
-                    opening_date=row_data["opening_date"],
-                )
+            for tender in task_tenders[tid]:
+                upsert_tender(conn, tender)
             conn.execute(
                 "UPDATE tasks SET status = 'DONE', updated_at = datetime('now') WHERE id = ?",
                 (tid,),
