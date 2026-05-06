@@ -7,6 +7,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from tender_royal_pulse.models import Tender
+
+# ... (Keep TaskStatus, TaskType, ListPagePayload, Task as they are) ...
+# I'll rewrite the whole file to ensure consistency and fix the upsert_tender signature
+
 
 class TaskStatus(StrEnum):
     PENDING = "PENDING"
@@ -245,39 +250,42 @@ def recover_stale_tasks(
 
 def upsert_tender(
     conn: sqlite3.Connection,
-    source: str,
-    tender_id: str,
-    title: str | None = None,
-    reference_number: str | None = None,
-    org_chain: str | None = None,
-    tender_type: str | None = None,
-    category: str | None = None,
-    tender_value: str | None = None,
-    emd_amount: str | None = None,
-    doc_fee: str | None = None,
-    closing_date: str | None = None,
-    opening_date: str | None = None,
-    published_date: str | None = None,
-    detail_url: str | None = None,
+    tender: Tender,
     raw_json: str | None = None,
 ) -> bool:
     now = _now_iso()
     cursor = conn.execute(
         "SELECT id FROM tenders WHERE source = ? AND tender_id = ?",
-        (source, tender_id),
+        (tender.source, tender.tender_id),
     )
     existing = cursor.fetchone()
+
+    # We use the model's attributes directly.
+    # We convert Decimals/Datetimes to strings for SQLite.
+
+    vals = (
+        tender.title or None,
+        tender.reference_number or None,
+        tender.org_chain or None,
+        tender.tender_type or None,
+        tender.category or None,
+        str(tender.tender_value) if tender.tender_value is not None else None,
+        str(tender.emd_amount) if tender.emd_amount is not None else None,
+        str(tender.doc_fee) if tender.doc_fee is not None else None,
+        tender.closing_date.isoformat() if tender.closing_date else None,
+        tender.opening_date.isoformat() if tender.opening_date else None,
+        tender.published_date.isoformat() if tender.published_date else None,
+        tender.detail_url or None,
+        raw_json,
+    )
+
     if existing:
         conn.execute(
             "UPDATE tenders SET title = ?, reference_number = ?, org_chain = ?, "
             "tender_type = ?, category = ?, tender_value = ?, emd_amount = ?, "
             "doc_fee = ?, closing_date = ?, opening_date = ?, published_date = ?, "
             "detail_url = ?, raw_json = ?, updated_at = ? WHERE id = ?",
-            (
-                title, reference_number, org_chain, tender_type, category,
-                tender_value, emd_amount, doc_fee, closing_date, opening_date,
-                published_date, detail_url, raw_json, now, existing["id"],
-            ),
+            (*vals, now, existing["id"]),
         )
         conn.commit()
         return False
@@ -287,11 +295,7 @@ def upsert_tender(
             "tender_type, category, tender_value, emd_amount, doc_fee, closing_date, "
             "opening_date, published_date, detail_url, raw_json, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                source, tender_id, title, reference_number, org_chain, tender_type,
-                category, tender_value, emd_amount, doc_fee, closing_date, opening_date,
-                published_date, detail_url, raw_json, now, now,
-            ),
+            (tender.source, tender.tender_id, *vals, now, now),
         )
         conn.commit()
         return True

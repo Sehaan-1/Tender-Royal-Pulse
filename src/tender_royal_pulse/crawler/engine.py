@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Callable
-from typing import Any
 
 from tender_royal_pulse.crawler.queue import (
     Task,
@@ -21,8 +20,10 @@ from tender_royal_pulse.crawler.retry import (
     classify_error,
     get_retry_config,
 )
+from tender_royal_pulse.models import Tender
 from tender_royal_pulse.monitoring.logging import EventLogger, setup_logging
 
+# ... (CancellationToken is the same) ...
 
 class CancellationToken:
     def __init__(self) -> None:
@@ -39,10 +40,11 @@ class CancellationToken:
             self._cancelled = True
 
 
-RowProcessor = Callable[[int, sqlite3.Connection], dict[str, Any] | None]
+# Changed RowProcessor to return Tender model
+RowProcessor = Callable[[int, sqlite3.Connection], Tender | None]
 
 
-def _default_row_processor(row_index: int, conn: sqlite3.Connection) -> dict[str, Any] | None:
+def _default_row_processor(row_index: int, conn: sqlite3.Connection) -> Tender | None:
     return None
 
 
@@ -110,29 +112,16 @@ def execute_list_page_task(
                 )
                 return
 
-            result = process_row(row_index, conn)
-            if result is None:
+            tender = process_row(row_index, conn)
+            if tender is None:
                 break
 
-            tender_id = result.get("tender_id", "")
             upsert_tender(
                 conn,
-                source=result.get("source", "eprocure"),
-                tender_id=tender_id,
-                title=result.get("title"),
-                reference_number=result.get("reference_number"),
-                org_chain=result.get("org_chain"),
-                tender_type=result.get("tender_type"),
-                category=result.get("category"),
-                tender_value=result.get("tender_value"),
-                emd_amount=result.get("emd_amount"),
-                doc_fee=result.get("doc_fee"),
-                closing_date=result.get("closing_date"),
-                opening_date=result.get("opening_date"),
-                published_date=result.get("published_date"),
-                detail_url=result.get("detail_url"),
+                tender=tender,
+                raw_json=None, # In a real scenario, we'd pass the raw data here
             )
-            log.debug("row_processed", tender_id=tender_id, row_index=row_index)
+            log.debug("row_processed", tender_id=tender.tender_id, row_index=row_index)
             row_count += 1
             row_index += 1
 
