@@ -26,6 +26,7 @@ jobs:
           python-version: "3.11"
       - run: pip install mypy
       - run: pip install -e .
+      - run: pip install types-python-dateutil
       - run: mypy src/tender_royal_pulse/
 
   test:
