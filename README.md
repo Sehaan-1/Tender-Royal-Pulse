@@ -33,6 +33,7 @@
   - [State Machine](#state-machine)
   - [Heartbeat & Stale Recovery](#heartbeat--stale-recovery)
   - [Retry Taxonomy](#retry-taxonomy)
+- [Quickstart](#-quickstart)
 - [Installation](#-installation)
 - [Usage](#-usage)
 - [Testing](#-testing)
@@ -303,6 +304,31 @@ Errors are classified into **9 distinct buckets** — each with its own max-atte
 
 Every attempt is persisted in `task_attempts` for forensic debugging.
 > Source: [`src/tender_royal_pulse/crawler/retry.py`](src/tender_royal_pulse/crawler/retry.py)
+
+---
+
+## 🚀 Quickstart
+
+```bash
+# 1 — Install
+pip install -e ".[dev]"
+playwright install chromium
+
+# 2 — Run tests (unit only, no browser required)
+python -m pytest -m "not integration" -q
+ruff check . && mypy src/
+
+# 3 — Generate a sample dataset
+python scripts/build_main_dataset.py
+
+# 4 — Export the sample to CSV and JSONL
+python -m tender_royal_pulse.cli export \
+    --db data/tenderpulse.db \
+    --output exports/tenders.jsonl \
+    --format jsonl
+```
+
+> **Note:** The `crawl` command requires a live Playwright session with eProcure credentials. Use the sample data in `samples/` for local development.
 
 ---
 
