@@ -43,9 +43,15 @@ class TenderMeta(BaseModel):
     task_id: str | None = None
     fetched_at: datetime | None = None
     fetcher_used: str = "eprocure_dom.playwright"
-    parse_version: str = "1.0.0"
+    # Bump whenever parse logic changes so callers can re-process historical
+    # records that were stored under an older version.
+    parse_version: str = "1.1.0"
     page_index: int | None = None
     row_index: int | None = None
+    # Keys are field names; values are short error descriptions.  Presence of
+    # a key means that field was attempted but failed to parse — distinct from
+    # a field that was simply absent on the page (value stays None).
+    parse_errors: dict[str, str] | None = None
 
 
 class ErrorEvent(BaseModel):

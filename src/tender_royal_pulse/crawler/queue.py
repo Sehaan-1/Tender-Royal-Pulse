@@ -1,13 +1,53 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from tender_royal_pulse.models import Tender
+
+_log = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+# ---------------------------------------------------------------------------
+# SQLite concurrency helpers
+# ---------------------------------------------------------------------------
+
+_LOCK_MSG = "database is locked"
+_RETRY_DELAYS: tuple[float, ...] = (0.1, 0.5, 1.0)  # exponential-ish: 100ms→500ms→1s
+
+
+def _with_sqlite_retry(fn: Callable[[], _T]) -> _T:
+    """Call fn() and retry up to 3 times on 'database is locked'."""
+    last_exc: sqlite3.OperationalError | None = None
+    for attempt, delay in enumerate(_RETRY_DELAYS, start=1):
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if _LOCK_MSG in str(exc).lower():
+                last_exc = exc
+                _log.warning(
+                    "sqlite_locked_retry",
+                    extra={"attempt": attempt, "delay_s": delay, "fn": fn.__name__},
+                )
+                time.sleep(delay)
+            else:
+                raise  # non-lock OperationalError — re-raise immediately
+    # Final attempt without sleep
+    try:
+        return fn()
+    except sqlite3.OperationalError:
+        # last_exc is always set: we only reach here after at least one retry.
+        assert last_exc is not None
+        raise last_exc
 
 
 class TaskStatus(StrEnum):
@@ -139,30 +179,44 @@ def get_run_tasks(conn: sqlite3.Connection, run_id: str) -> list[Task]:
 
 
 def claim_task(conn: sqlite3.Connection, task_id: str) -> Task | None:
-    cursor = conn.execute(
-        "SELECT * FROM tasks WHERE id = ? AND status = 'PENDING'",
-        (task_id,),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        return None
-    now = _now_iso()
-    conn.execute(
-        "UPDATE tasks SET status = 'RUNNING', heartbeat_at = ?, "
-        "attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?",
-        (now, now, task_id),
-    )
-    conn.commit()
-    return _task_from_row(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+    def _impl() -> Task | None:
+        cursor = conn.execute(
+            "SELECT * FROM tasks WHERE id = ? AND status = 'PENDING'",
+            (task_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        now = _now_iso()
+        conn.execute(
+            "UPDATE tasks SET status = 'RUNNING', heartbeat_at = ?, "
+            "attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?",
+            (now, now, task_id),
+        )
+        conn.commit()
+        return _task_from_row(
+            conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        )
+
+    return _with_sqlite_retry(_impl)
 
 
 def update_heartbeat(conn: sqlite3.Connection, task_id: str) -> None:
-    now = _now_iso()
-    conn.execute("UPDATE tasks SET heartbeat_at = ? WHERE id = ?", (now, task_id))
-    conn.commit()
+    def _impl() -> None:
+        now = _now_iso()
+        conn.execute("UPDATE tasks SET heartbeat_at = ? WHERE id = ?", (now, task_id))
+        conn.commit()
+
+    return _with_sqlite_retry(_impl)
 
 
 def mark_task_done(conn: sqlite3.Connection, task_id: str) -> None:
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None or row["status"] != TaskStatus.RUNNING:
+        current = row["status"] if row else "missing"
+        raise ValueError(
+            f"mark_task_done: task {task_id!r} must be RUNNING, got {current!r}"
+        )
     now = _now_iso()
     conn.execute(
         "UPDATE tasks SET status = 'DONE', updated_at = ? WHERE id = ?",
@@ -250,49 +304,52 @@ def upsert_tender(
     tender: Tender,
     raw_json_str: str | None = None,
 ) -> bool:
-    now = _now_iso()
-    cursor = conn.execute(
-        "SELECT id FROM tenders WHERE source = ? AND tender_id = ?",
-        (tender.source, tender.tender_id),
-    )
-    existing = cursor.fetchone()
-
-    # We use the model's attributes directly.
-    # We convert Decimals/Datetimes to strings for SQLite.
-
-    vals = (
-        tender.title or None,
-        tender.reference_number or None,
-        tender.org_chain or None,
-        tender.tender_type or None,
-        tender.category or None,
-        str(tender.tender_value) if tender.tender_value is not None else None,
-        str(tender.emd_amount) if tender.emd_amount is not None else None,
-        str(tender.doc_fee) if tender.doc_fee is not None else None,
-        tender.closing_date.isoformat() if tender.closing_date else None,
-        tender.opening_date.isoformat() if tender.opening_date else None,
-        tender.published_date.isoformat() if tender.published_date else None,
-        tender.detail_url or None,
-        raw_json_str,
-    )
-
-    if existing:
-        conn.execute(
-            "UPDATE tenders SET title = ?, reference_number = ?, org_chain = ?, "
-            "tender_type = ?, category = ?, tender_value = ?, emd_amount = ?, "
-            "doc_fee = ?, closing_date = ?, opening_date = ?, published_date = ?, "
-            "detail_url = ?, raw_json = ?, updated_at = ? WHERE id = ?",
-            (*vals, now, existing["id"]),
+    def _impl() -> bool:
+        now = _now_iso()
+        cursor = conn.execute(
+            "SELECT id FROM tenders WHERE source = ? AND tender_id = ?",
+            (tender.source, tender.tender_id),
         )
-        conn.commit()
-        return False
-    else:
-        conn.execute(
-            "INSERT INTO tenders (source, tender_id, title, reference_number, org_chain, "
-            "tender_type, category, tender_value, emd_amount, doc_fee, closing_date, "
-            "opening_date, published_date, detail_url, raw_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (tender.source, tender.tender_id, *vals, now, now),
+        existing = cursor.fetchone()
+
+        # We use the model's attributes directly.
+        # We convert Decimals/Datetimes to strings for SQLite.
+
+        vals = (
+            tender.title or None,
+            tender.reference_number or None,
+            tender.org_chain or None,
+            tender.tender_type or None,
+            tender.category or None,
+            str(tender.tender_value) if tender.tender_value is not None else None,
+            str(tender.emd_amount) if tender.emd_amount is not None else None,
+            str(tender.doc_fee) if tender.doc_fee is not None else None,
+            tender.closing_date.isoformat() if tender.closing_date else None,
+            tender.opening_date.isoformat() if tender.opening_date else None,
+            tender.published_date.isoformat() if tender.published_date else None,
+            tender.detail_url or None,
+            raw_json_str,
         )
-        conn.commit()
-        return True
+
+        if existing:
+            conn.execute(
+                "UPDATE tenders SET title = ?, reference_number = ?, org_chain = ?, "
+                "tender_type = ?, category = ?, tender_value = ?, emd_amount = ?, "
+                "doc_fee = ?, closing_date = ?, opening_date = ?, published_date = ?, "
+                "detail_url = ?, raw_json = ?, updated_at = ? WHERE id = ?",
+                (*vals, now, existing["id"]),
+            )
+            conn.commit()
+            return False
+        else:
+            conn.execute(
+                "INSERT INTO tenders (source, tender_id, title, reference_number, org_chain, "
+                "tender_type, category, tender_value, emd_amount, doc_fee, closing_date, "
+                "opening_date, published_date, detail_url, raw_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (tender.source, tender.tender_id, *vals, now, now),
+            )
+            conn.commit()
+            return True
+
+    return _with_sqlite_retry(_impl)

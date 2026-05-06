@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+# Increment this whenever a new migration is added to db/migrations.py.
+SCHEMA_VERSION = 2
 
 CREATE_RUNS_TABLE = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -56,9 +57,9 @@ CREATE TABLE IF NOT EXISTS tenders (
     org_chain       TEXT,
     tender_type     TEXT,
     category        TEXT,
-    tender_value    TEXT,
-    emd_amount      TEXT,
-    doc_fee         TEXT,
+    tender_value    REAL,
+    emd_amount      REAL,
+    doc_fee         REAL,
     closing_date    TEXT,
     opening_date    TEXT,
     published_date  TEXT,
@@ -74,12 +75,22 @@ CREATE TABLE IF NOT EXISTS tenders (
 def initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")  # wait up to 5 s instead of immediate failure
     conn.execute(CREATE_RUNS_TABLE)
     conn.execute(CREATE_TASKS_TABLE)
     conn.execute(CREATE_TASK_ATTEMPTS_TABLE)
     conn.execute(CREATE_TENDERS_TABLE)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_run_id ON tasks(run_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+    # Composite index: covers get_pending_tasks(run_id, status) and
+    # recover_stale_tasks(run_id, status='RUNNING') without a separate status scan.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_run_id_status ON tasks(run_id, status)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_heartbeat ON tasks(heartbeat_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_task_attempts_task_id ON task_attempts(task_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_attempts_task_id ON task_attempts(task_id)"
+    )
+    # Covers status-filtered run queries (e.g. list all 'running' runs).
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)"
+    )
     conn.commit()

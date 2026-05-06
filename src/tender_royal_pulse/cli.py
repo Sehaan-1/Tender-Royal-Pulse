@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime
 from decimal import Decimal
@@ -22,6 +23,21 @@ from tender_royal_pulse.exporters import CSVExporter, JSONLExporter
 
 app = typer.Typer(name="tender_royal_pulse", help="eProcure tender crawler with crash recovery")
 console = Console()
+
+# ---------------------------------------------------------------------------
+# Verbosity helpers
+# ---------------------------------------------------------------------------
+
+def _log_level(verbose: bool, quiet: bool) -> int:
+    """Resolve the effective logging level from CLI flags.
+
+    Priority: --quiet wins over --verbose.
+    """
+    if quiet:
+        return logging.WARNING
+    if verbose:
+        return logging.DEBUG
+    return logging.INFO
 
 
 def _build_page_payloads(input_data: dict[str, Any], limit: int | None) -> list[ListPagePayload]:
@@ -46,7 +62,10 @@ def crawl(
     output_path: Path | None = typer.Option(None, "--output", "-o", help="Output file path after crawl"),
     format: str = typer.Option("jsonl", "--format", "-f", help="Output format: csv or jsonl"),
     limit: int | None = typer.Option(None, "--limit", help="Limit number of pages to process"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show per-task debug progress"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress all output except warnings/errors"),
 ) -> None:
+    """Crawl eProcure and persist tenders to the database."""
     input_data = load_input_json(input_path)
 
     conn = resolve_db(db_path)
@@ -58,7 +77,12 @@ def crawl(
     tasks = create_tasks(conn, run_id, payloads, session_context_json)
     conn.close()
 
-    engine = CrawlEngine(str(db_path), row_processor=build_row_processor("mock"))
+    level = _log_level(verbose, quiet)
+    engine = CrawlEngine(
+        str(db_path),
+        row_processor=build_row_processor("mock"),
+        log_level=level,
+    )
     processed = engine.process_run(run_id)
 
     conn = sqlite3.connect(db_path)
@@ -66,24 +90,21 @@ def crawl(
     tender_count = conn.execute("SELECT COUNT(*) as cnt FROM tenders").fetchone()["cnt"]
     conn.close()
 
-    table = Table(title="Crawl Summary")
-    table.add_column("Run ID", style="cyan", no_wrap=True)
-    table.add_column("Pages", justify="right")
-    table.add_column("Tasks", justify="right")
-    table.add_column("Tenders", justify="right", style="green")
-    table.add_row(run_id[:8], str(processed), str(len(tasks)), str(tender_count))
-    console.print(table)
+    if not quiet:
+        table = Table(title="Crawl Summary")
+        table.add_column("Run ID", style="cyan", no_wrap=True)
+        table.add_column("Pages", justify="right")
+        table.add_column("Tasks", justify="right")
+        table.add_column("Tenders", justify="right", style="green")
+        table.add_row(run_id[:8], str(processed), str(len(tasks)), str(tender_count))
+        console.print(table)
 
     if output_path:
-        _do_export(db_path, output_path, format)
+        _do_export(db_path, output_path, format, quiet=quiet)
 
 
-@app.command()
-def export(
-    db_path: Path = typer.Option(..., "--db", "-d", help="SQLite database path"),
-    output_path: Path = typer.Option(..., "--output", "-o", help="Output file path"),
-    format: str = typer.Option("jsonl", "--format", "-f", help="Output format: csv or jsonl"),
-) -> None:
+def _do_export(db_path: Path, output_path: Path, format: str, *, quiet: bool = False) -> None:
+    """Shared export logic used by both the `export` command and `crawl --output`."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM tenders ORDER BY created_at DESC").fetchall()
@@ -103,13 +124,26 @@ def export(
 
     exporter = CSVExporter(str(output_path.parent)) if format == "csv" else JSONLExporter(str(output_path.parent))
     exporter.export(records, output_path.name)
-    console.print(f"[green]Exported {len(records)} records to {output_path}[/green]")
+    if not quiet:
+        console.print(f"[green]Exported {len(records)} records to {output_path}[/green]")
+
+
+@app.command()
+def export(
+    db_path: Path = typer.Option(..., "--db", "-d", help="SQLite database path"),
+    output_path: Path = typer.Option(..., "--output", "-o", help="Output file path"),
+    format: str = typer.Option("jsonl", "--format", "-f", help="Output format: csv or jsonl"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress progress output"),
+) -> None:
+    """Export tenders from the database to CSV or JSONL."""
+    _do_export(db_path, output_path, format, quiet=quiet)
 
 
 @app.command()
 def status(
     db_path: Path = typer.Option(..., "--db", "-d", help="SQLite database path"),
 ) -> None:
+    """Show recent crawl run summaries."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     runs = conn.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT 5").fetchall()
@@ -138,7 +172,13 @@ def status(
         ).fetchall()
         conn.close()
 
-        counts: dict[str, int] = {"PENDING": 0, "RUNNING": 0, "DONE": 0, "FAILED_RETRYABLE": 0, "FAILED_PERMANENT": 0}
+        counts: dict[str, int] = {
+            "PENDING": 0,
+            "RUNNING": 0,
+            "DONE": 0,
+            "FAILED_RETRYABLE": 0,
+            "FAILED_PERMANENT": 0,
+        }
         for row in task_counts:
             counts[row["status"]] = row["cnt"]
 
@@ -158,29 +198,6 @@ def status(
         )
 
     console.print(table)
-
-
-def _do_export(db_path: Path, output_path: Path, format: str) -> None:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM tenders ORDER BY created_at DESC").fetchall()
-    conn.close()
-
-    records: list[dict[str, Any]] = []
-    for row in rows:
-        record: dict[str, Any] = dict(row)
-        for key, value in record.items():
-            if isinstance(value, Decimal):
-                record[key] = str(value)
-            elif isinstance(value, datetime):
-                record[key] = value.isoformat()
-        if "id" in record:
-            del record["id"]
-        records.append(record)
-
-    exporter = CSVExporter(str(output_path.parent)) if format == "csv" else JSONLExporter(str(output_path.parent))
-    exporter.export(records, output_path.name)
-    console.print(f"[green]Exported {len(records)} records to {output_path}[/green]")
 
 
 if __name__ == "__main__":

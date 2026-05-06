@@ -8,6 +8,7 @@ from typing import Any, cast
 import typer
 
 from tender_royal_pulse.crawler.engine import RowProcessor
+from tender_royal_pulse.db.migrations import run_migrations
 from tender_royal_pulse.db.schema import initialize_schema
 
 
@@ -43,6 +44,9 @@ def resolve_db(db_path: Path) -> sqlite3.Connection:
 
     if is_new:
         initialize_schema(conn)
+
+    # Apply any pending migrations (idempotent — safe to call on every startup).
+    run_migrations(conn)
 
     return conn
 

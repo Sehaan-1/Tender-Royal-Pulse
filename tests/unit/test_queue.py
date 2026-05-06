@@ -74,6 +74,7 @@ def test_mark_task_done_sets_status(db_conn):
     run_id = create_run(db_conn)
     tasks = create_tasks(db_conn, run_id, [ListPagePayload(mode="test", page_index=0)])
     task_id = tasks[0].id
+    claim_task(db_conn, task_id)  # must be RUNNING before marking done
     mark_task_done(db_conn, task_id)
     row = db_conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
     assert row["status"] == "DONE"

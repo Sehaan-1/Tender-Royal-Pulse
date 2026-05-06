@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -12,6 +13,7 @@ def get_connection(db_path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")  # wait up to 5 s instead of immediate failure
     return conn
 
 
@@ -22,7 +24,7 @@ def create_database(db_path: str | Path) -> sqlite3.Connection:
 
 
 @contextmanager
-def database_session(db_path: str | Path):  # type: ignore[no-untyped-def]
+def database_session(db_path: str | Path) -> Generator[sqlite3.Connection, None, None]:
     conn = get_connection(db_path)
     try:
         yield conn

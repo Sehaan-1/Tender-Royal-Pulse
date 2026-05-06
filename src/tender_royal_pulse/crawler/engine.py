@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
+import signal
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 
 from tender_royal_pulse.crawler.queue import (
     Task,
@@ -22,6 +25,8 @@ from tender_royal_pulse.crawler.retry import (
 )
 from tender_royal_pulse.models import Tender
 from tender_royal_pulse.monitoring.logging import EventLogger, setup_logging
+
+_log = logging.getLogger(__name__)
 
 
 class CancellationToken:
@@ -44,6 +49,65 @@ RowProcessor = Callable[[int, sqlite3.Connection], Tender | None]
 
 def _default_row_processor(row_index: int, conn: sqlite3.Connection) -> Tender | None:
     return None
+
+
+# ---------------------------------------------------------------------------
+# SIGTERM graceful-shutdown helper
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _sigterm_handler(
+    cancel_token: CancellationToken,
+    db_path: str,
+    run_id: str,
+    logger: EventLogger,
+) -> Generator[None, None, None]:
+    """Install a SIGTERM handler for the duration of a ``process_run`` call.
+
+    On SIGTERM:
+    1. Sets *cancel_token* so the engine stops accepting new tasks.
+    2. Logs the shutdown event.
+    3. After ``process_run`` returns (draining the current task), resets any
+       RUNNING tasks for *run_id* back to PENDING so they recover on restart.
+    4. Re-raises ``SystemExit(0)`` after cleanup.
+    """
+    _received_sigterm = threading.Event()
+    _original_handler = signal.getsignal(signal.SIGTERM)
+
+    def _handle(signum: int, frame: object) -> None:  # noqa: ARG001
+        logger.warning("sigterm_received", run_id=run_id)
+        cancel_token.cancel()
+        _received_sigterm.set()
+
+    signal.signal(signal.SIGTERM, _handle)
+    try:
+        yield
+    finally:
+        # Restore original handler regardless of how we exit.
+        signal.signal(signal.SIGTERM, _original_handler)
+
+        if _received_sigterm.is_set():
+            # Reset RUNNING tasks → PENDING so a restarted worker picks them up.
+            try:
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                try:
+                    rows = conn.execute(
+                        "SELECT id FROM tasks WHERE run_id = ? AND status = 'RUNNING'",
+                        (run_id,),
+                    ).fetchall()
+                    for row in rows:
+                        conn.execute(
+                            "UPDATE tasks SET status = 'PENDING', updated_at = datetime('now')"
+                            " WHERE id = ?",
+                            (row["id"],),
+                        )
+                        logger.warning("task_reset_pending_on_sigterm", task_id=row["id"])
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception as exc:
+                logger.warning("sigterm_cleanup_error", error_class=str(type(exc).__name__))
 
 
 def execute_list_page_task(
@@ -117,7 +181,7 @@ def execute_list_page_task(
             upsert_tender(
                 conn,
                 tender=tender,
-                raw_json_str=None
+                raw_json_str=None,
             )
             log.debug("row_processed", tender_id=tender.tender_id, row_index=row_index)
             row_count += 1
@@ -174,12 +238,13 @@ class CrawlEngine:
         heartbeat_interval: float = 2.0,
         stale_timeout_seconds: float = 30.0,
         logger: EventLogger | None = None,
+        log_level: int = logging.INFO,
     ) -> None:
         self._db_path = db_path
         self._row_processor = row_processor
         self._heartbeat_interval = heartbeat_interval
         self._stale_timeout_seconds = stale_timeout_seconds
-        self._logger = logger or setup_logging()
+        self._logger = logger or setup_logging(level=log_level)
         self._cancel_token = CancellationToken()
 
     @property
@@ -216,26 +281,29 @@ class CrawlEngine:
                 )
 
             processed = 0
-            while True:
-                if self._cancel_token.cancelled:
-                    self._logger.warning("engine_cancelled", run_id=run_id)
-                    break
+            with _sigterm_handler(self._cancel_token, self._db_path, run_id, self._logger):
+                while True:
+                    if self._cancel_token.cancelled:
+                        self._logger.warning("engine_cancelled", run_id=run_id)
+                        break
 
-                pending = get_pending_tasks(conn, run_id)
-                if not pending:
-                    self._logger.info("run_completed", run_id=run_id, tasks_processed=processed)
-                    break
+                    pending = get_pending_tasks(conn, run_id)
+                    if not pending:
+                        self._logger.info(
+                            "run_completed", run_id=run_id, tasks_processed=processed,
+                        )
+                        break
 
-                task = pending[0]
-                execute_list_page_task(
-                    conn,
-                    task,
-                    process_row=self._row_processor,
-                    heartbeat_interval=self._heartbeat_interval,
-                    cancel_token=self._cancel_token,
-                    logger=self._logger,
-                )
-                processed += 1
+                    task = pending[0]
+                    execute_list_page_task(
+                        conn,
+                        task,
+                        process_row=self._row_processor,
+                        heartbeat_interval=self._heartbeat_interval,
+                        cancel_token=self._cancel_token,
+                        logger=self._logger,
+                    )
+                    processed += 1
 
             return processed
         finally:
@@ -252,7 +320,7 @@ class CrawlEngine:
             row = cursor.fetchone()
             if row is None:
                 raise ValueError(f"Task {task_id} not found")
-            from tender_royal_pulse.crawler.queue import _task_from_row
+            from tender_royal_pulse.crawler.queue import _task_from_row  # noqa: PLC0415
             task = _task_from_row(row)
             execute_list_page_task(
                 conn,
