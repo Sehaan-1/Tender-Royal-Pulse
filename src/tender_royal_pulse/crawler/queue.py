@@ -9,9 +9,6 @@ from pydantic import BaseModel
 
 from tender_royal_pulse.models import Tender
 
-# ... (Keep TaskStatus, TaskType, ListPagePayload, Task as they are) ...
-# I'll rewrite the whole file to ensure consistency and fix the upsert_tender signature
-
 
 class TaskStatus(StrEnum):
     PENDING = "PENDING"
@@ -251,7 +248,7 @@ def recover_stale_tasks(
 def upsert_tender(
     conn: sqlite3.Connection,
     tender: Tender,
-    raw_json: str | None = None,
+    raw_json_str: str | None = None,
 ) -> bool:
     now = _now_iso()
     cursor = conn.execute(
@@ -276,7 +273,7 @@ def upsert_tender(
         tender.opening_date.isoformat() if tender.opening_date else None,
         tender.published_date.isoformat() if tender.published_date else None,
         tender.detail_url or None,
-        raw_json,
+        raw_json_str,
     )
 
     if existing:

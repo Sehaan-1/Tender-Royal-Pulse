@@ -23,7 +23,6 @@ from tender_royal_pulse.crawler.retry import (
 from tender_royal_pulse.models import Tender
 from tender_royal_pulse.monitoring.logging import EventLogger, setup_logging
 
-# ... (CancellationToken is the same) ...
 
 class CancellationToken:
     def __init__(self) -> None:
@@ -40,7 +39,6 @@ class CancellationToken:
             self._cancelled = True
 
 
-# Changed RowProcessor to return Tender model
 RowProcessor = Callable[[int, sqlite3.Connection], Tender | None]
 
 
@@ -119,7 +117,7 @@ def execute_list_page_task(
             upsert_tender(
                 conn,
                 tender=tender,
-                raw_json=None, # In a real scenario, we'd pass the raw data here
+                raw_json_str=None
             )
             log.debug("row_processed", tender_id=tender.tender_id, row_index=row_index)
             row_count += 1

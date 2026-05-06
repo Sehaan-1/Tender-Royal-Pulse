@@ -14,6 +14,7 @@ from tender_royal_pulse.crawler.queue import (
     mark_task_failed_permanent,
     mark_task_failed_retryable,
     recover_stale_tasks,
+    update_heartbeat,
     upsert_tender,
 )
 from tender_royal_pulse.crawler.retry import (
@@ -49,5 +50,6 @@ __all__ = [
     "mark_task_failed_permanent",
     "mark_task_failed_retryable",
     "recover_stale_tasks",
+    "update_heartbeat",
     "upsert_tender",
 ]
