@@ -123,6 +123,7 @@ Manages **session context** (cookies & Playwright storage state) for ASP.NET ses
 
 - `schema.py`: `initialize_schema(conn)` — creates all tables and indexes, sets `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON`
 - `engine.py`: connection helpers
+- `migrations.py`: versioned migration runner with idempotent DDL (`run_migrations()`, `SCHEMA_VERSION` tracking)
 
 ---
 

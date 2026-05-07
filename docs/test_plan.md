@@ -14,12 +14,17 @@ Fast tests — no browser, no SQLite file I/O.
 | `test_normalization_money.py` | `parse_indian_money()` — ₹/Rs/INR, lakh/crore grouping → `Decimal` |
 | `test_queue.py` | SQLite task queue: create/claim/done/failed state transitions, heartbeat update, stale recovery |
 | `test_retry_policy.py` | Backoff schedules, max-attempts enforcement, retryable vs permanent classification |
+| `test_heartbeat.py` | Heartbeat liveness writes & stale detectability |
+| `test_sigterm_shutdown.py` | Graceful SIGTERM handling in CrawlEngine |
+| `test_stale_recovery.py` | Stale task reset & recovery logic |
+| `test_state_transitions.py` | Task state machine transitions |
 
 ### 2. Top-level Unit Tests (`tests/`)
 
 | File | Coverage |
 |------|----------|
 | `test_exporters.py` | `CSVExporter` (comma/quote/newline escaping) and `JSONLExporter` (line-per-record validity) |
+| `test_migrations.py` | Schema migration runner — bootstrap, indexes, TEXT→REAL cast, idempotency |
 | `test_state_machine.py` | `SessionContext`: default version, nullable storage, `to_playwright_storage_state()`, `from_playwright_storage_state()` |
 
 ### 3. Integration Tests (`tests/integration/`)

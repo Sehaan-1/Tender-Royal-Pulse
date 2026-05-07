@@ -1,4 +1,4 @@
-.PHONY: test run export lint typecheck clean
+.PHONY: test test-all test-unit test-integration run export lint typecheck fmt clean clean-win
 
 PYTHON    := python
 PIP       := $(PYTHON) -m pip

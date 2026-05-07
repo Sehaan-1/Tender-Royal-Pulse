@@ -22,30 +22,30 @@
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
-- [Why eProcure Is Hard](#-why-eprocure-is-hard)
-- [Architecture Overview](#-architecture-overview)
-- [Key Features](#-key-features)
-- [Project Structure](#-project-structure)
-- [Data Model](#-data-model)
-- [Reliability Engine](#-reliability-engine)
+- [Why eProcure Is Hard](#why-eprocure-is-hard)
+- [Architecture Overview](#architecture-overview)
+- [Key Features](#key-features)
+- [Project Structure](#project-structure)
+- [Data Model](#data-model)
+- [Reliability Engine](#reliability-engine)
   - [State Machine](#state-machine)
   - [Heartbeat & Stale Recovery](#heartbeat--stale-recovery)
   - [Retry Taxonomy](#retry-taxonomy)
-- [Quickstart](#-quickstart)
-- [Installation](#-installation)
-- [Usage](#-usage)
-- [Testing](#-testing)
-- [Makefile Reference](#-makefile-reference)
-- [Database Schema](#-database-schema)
-- [Documentation](#-documentation)
-- [Ethics & Limitations](#-ethics--limitations)
-- [License](#-license)
+- [Quickstart](#quickstart)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Testing](#testing)
+- [Makefile Reference](#makefile-reference)
+- [Database Schema](#database-schema)
+- [Documentation](#documentation)
+- [Ethics & Limitations](#ethics--limitations)
+- [License](#license)
 
 ---
 
-## 🔥 Why eProcure Is Hard
+## Why eProcure Is Hard
 
 The [eProcure (CPPP)](https://etenders.gov.in) portal is one of the most technically hostile scraping targets in Indian e-government infrastructure. Here's why — and how TenderPulse handles every obstacle:
 
@@ -61,7 +61,7 @@ The [eProcure (CPPP)](https://etenders.gov.in) portal is one of the most technic
 
 ---
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -100,6 +100,7 @@ The [eProcure (CPPP)](https://etenders.gov.in) portal is one of the most technic
          │  tasks             │
          │  task_attempts     │
          │  tenders           │
+         │  schema_migrations │
          └────────────────────┘
 ```
 
@@ -114,26 +115,28 @@ Input JSON → Queue (ListPagePayload tasks) → Playwright fetch each page
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 | Feature | Details |
 |---------|---------|
-| 🤖 **Headless Browser Scraping** | Playwright-powered; handles JavaScript, session cookies, ASP.NET state |
-| 🔄 **Crash Recovery** | Heartbeat per task; stale detection & automatic re-queue on restart |
-| ♻️ **Idempotent Upserts** | `UNIQUE(source, tender_id)` prevents duplicate records across runs |
-| 📦 **Rich Typed Data Models** | Pydantic v2 `Tender`, `Attachment`, `TenderMeta`, `RunSummary`, `ErrorEvent` |
-| 🏷️ **9-Bucket Retry Taxonomy** | Per-error-class max attempts and exponential backoff |
-| 💱 **Indian Money Normalization** | Parses ₹/Rs/INR, lakh/crore groupings → `Decimal` |
-| 📅 **Date Normalization** | Handles Indian date formats → `datetime` |
-| 📊 **Dual Export** | CSV (for analysts) and JSONL (for BigQuery / streaming pipelines) |
-| 🛡️ **Strict Type Safety** | `mypy --strict` passes; zero `Any` leakage in production paths |
-| 🔍 **Ruff Linting** | E, F, I, N, W, UP rule sets enforced in CI |
-| 🧪 **Comprehensive Tests** | Unit tests (6 files) + integration crash-recovery E2E suite |
-| 📋 **Rich CLI** | `crawl`, `export`, `status` commands with progress tables via Rich |
+| **Headless Browser Scraping** | Playwright-powered; handles JavaScript, session cookies, ASP.NET state |
+| **Crash Recovery** | Heartbeat per task; stale detection & automatic re-queue on restart |
+| **Graceful SIGTERM Shutdown** | `SIGTERM` handler resets `RUNNING` tasks to `PENDING` for clean recovery |
+| **Idempotent Upserts** | `UNIQUE(source, tender_id)` prevents duplicate records across runs |
+| **Rich Typed Data Models** | Pydantic v2 `Tender`, `Attachment`, `TenderMeta`, `RunSummary`, `ErrorEvent` |
+| **9-Bucket Retry Taxonomy** | Per-error-class max attempts and exponential backoff |
+| **Indian Money Normalization** | Parses ₹/Rs/INR, lakh/crore groupings → `Decimal` |
+| **Date Normalization** | Handles Indian date formats → `datetime` |
+| **Dual Export** | CSV (for analysts) and JSONL (for BigQuery / streaming pipelines) |
+| **Strict Type Safety** | `mypy --strict` passes; zero `Any` leakage in production paths |
+| **Ruff Linting** | E, F, I, N, W, UP rule sets enforced in CI |
+| **Comprehensive Tests** | Unit tests (10 files) + integration crash-recovery E2E suite |
+| **Rich CLI** | `crawl`, `export`, `status` commands with progress tables via Rich |
+| **Schema Migrations** | Versioned migration runner with idempotent DDL |
 
 ---
 
-## 🗂️ Project Structure
+## Project Structure
 
 ```
 tenderpulse/
@@ -158,7 +161,8 @@ tenderpulse/
 │       │
 │       ├── db/
 │       │   ├── engine.py            # DB connection helpers
-│       │   └── schema.py            # DDL: initialize_schema(), all CREATE TABLE statements
+│       │   ├── schema.py            # DDL: initialize_schema(), all CREATE TABLE statements
+│       │   └── migrations.py        # Versioned schema migrations (idempotent)
 │       │
 │       ├── exporters/
 │       │   ├── csv.py               # CSVExporter
@@ -182,16 +186,21 @@ tenderpulse/
 │   │
 │   ├── unit/                        # Fast unit tests — no I/O, no browser
 │   │   ├── test_error_classifier.py # 9-bucket error classification
+│   │   ├── test_heartbeat.py       # Heartbeat liveness & stale detection
 │   │   ├── test_models_invariants.py# Tender / Attachment Pydantic invariants
 │   │   ├── test_normalization_dates.py
 │   │   ├── test_normalization_money.py
 │   │   ├── test_queue.py            # SQLite task queue state transitions
-│   │   └── test_retry_policy.py     # Backoff schedules & max-attempts enforcement
+│   │   ├── test_retry_policy.py     # Backoff schedules & max-attempts enforcement
+│   │   ├── test_sigterm_shutdown.py # Graceful SIGTERM handling in CrawlEngine
+│   │   └── test_stale_recovery.py   # Stale task reset & recovery logic
+│   │   └── test_state_transitions.py # Task state machine transitions
 │   │
 │   ├── integration/
 │   │   └── test_crash_recovery.py  # Crash & stale recovery E2E tests (requires SQLite)
 │   │
 │   ├── test_exporters.py           # CSV / JSONL exporter correctness
+│   ├── test_migrations.py           # Schema migration runner (indexes, TEXT→REAL)
 │   ├── test_portal_parser.py       # Playwright DOM extraction (marked integration)
 │   └── test_state_machine.py       # SessionContext model tests
 │
@@ -205,16 +214,16 @@ tenderpulse/
 │       ├── 0002-playwright-sync.md
 │       └── 0003-session-bound-urls.md
 │
-├── samples/                         # Sample outputs for local dev
 ├── scripts/                         # Helper scripts (e.g. build_main_dataset.py)
 ├── reports/                         # Coverage & audit reports
+├── samples/                         # Sample outputs for local dev
 ├── Makefile                         # Developer shortcuts
 └── pyproject.toml                   # Build config, deps, ruff, mypy, pytest settings
 ```
 
 ---
 
-## 📊 Data Model
+## Data Model
 
 ### `Tender` — the canonical record
 
@@ -267,7 +276,7 @@ class TenderMeta(BaseModel):
 
 ---
 
-## 🛡️ Reliability Engine
+## Reliability Engine
 
 ### State Machine
 
@@ -283,7 +292,7 @@ Every crawl page is an atomic **task** with a strict lifecycle enforced by the S
          │                            │  (attempt_count >= max_attempts)
          └────────────────────────────┘
                                       ▼
-                              FAILED_PERMANENT ❌
+                               FAILED_PERMANENT ❌
 ```
 
 | State | Meaning | Transitions To |
@@ -333,7 +342,7 @@ Every attempt is persisted in `task_attempts` for forensic debugging.
 
 ---
 
-## 🚀 Quickstart
+## Quickstart
 
 ```bash
 # 1 — Install
@@ -357,7 +366,7 @@ make export
 
 ---
 
-## ⚙️ Installation
+## Installation
 
 ### Prerequisites
 
@@ -387,7 +396,7 @@ tenderpulse --help
 
 ---
 
-## 🚀 Usage
+## Usage
 
 ### Crawl tenders
 
@@ -444,7 +453,7 @@ Output (Rich table):
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ```bash
 # Unit tests only — fast, no browser, no DB I/O
@@ -469,19 +478,24 @@ mypy src/
 | Module | Tests | Category |
 |--------|-------|----------|
 | `tests/unit/test_error_classifier.py` | Error bucket classification | Unit |
+| `tests/unit/test_heartbeat.py` | Heartbeat liveness & stale detection | Unit |
 | `tests/unit/test_models_invariants.py` | Pydantic model constraints | Unit |
 | `tests/unit/test_normalization_dates.py` | Indian date parsing | Unit |
 | `tests/unit/test_normalization_money.py` | Indian money parsing | Unit |
 | `tests/unit/test_queue.py` | SQLite state machine | Unit |
 | `tests/unit/test_retry_policy.py` | Backoff & max-attempts | Unit |
-| `tests/integration/test_crash_recovery.py` | Crash + stale recovery E2E | Integration |
+| `tests/unit/test_sigterm_shutdown.py` | Graceful SIGTERM handling | Unit |
+| `tests/unit/test_stale_recovery.py` | Stale task reset & recovery | Unit |
+| `tests/unit/test_state_transitions.py` | Task state machine transitions | Unit |
 | `tests/test_exporters.py` | CSV / JSONL escaping & validity | Unit |
+| `tests/test_migrations.py` | Schema migration runner | Unit |
 | `tests/test_state_machine.py` | `SessionContext` model | Unit |
 | `tests/test_portal_parser.py` | DOM extraction via Playwright | Integration |
+| `tests/integration/test_crash_recovery.py` | Crash + stale recovery E2E | Integration |
 
 ---
 
-## 📋 Makefile Reference
+## Makefile Reference
 
 | Command | Description |
 |---------|-------------|
@@ -499,7 +513,7 @@ mypy src/
 
 ---
 
-## 🗄️ Database Schema
+## Database Schema
 
 ```sql
 -- One row per crawl session
@@ -549,32 +563,38 @@ CREATE TABLE tenders (
     org_chain        TEXT,
     tender_type      TEXT,
     category         TEXT,
-    tender_value     TEXT,      -- stored as Decimal string
-    emd_amount       TEXT,
-    doc_fee          TEXT,
-    closing_date     TEXT,      -- ISO 8601
+    tender_value     REAL,       -- stored as REAL (was TEXT before migration 002)
+    emd_amount       REAL,
+    doc_fee          REAL,
+    closing_date     TEXT,       -- ISO 8601
     opening_date     TEXT,
     published_date   TEXT,
     detail_url       TEXT,
-    raw_json         TEXT,      -- full raw JSON blob
+    raw_json         TEXT,       -- full raw JSON blob
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL,
     UNIQUE(source, tender_id)
+);
+
+-- Schema migration tracking (added by migration runner)
+CREATE TABLE schema_migrations (
+    version    INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
 );
 ```
 
 **Indexes** (auto-created by `initialize_schema()`):
 
 ```sql
-CREATE INDEX idx_tasks_run_id     ON tasks(run_id);
-CREATE INDEX idx_tasks_status     ON tasks(status);
-CREATE INDEX idx_tasks_heartbeat  ON tasks(heartbeat_at);
+CREATE INDEX idx_tasks_run_id_status  ON tasks(run_id, status);
+CREATE INDEX idx_tasks_heartbeat      ON tasks(heartbeat_at);
 CREATE INDEX idx_task_attempts_task_id ON task_attempts(task_id);
+CREATE INDEX idx_runs_status          ON runs(status);
 ```
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
@@ -588,7 +608,7 @@ CREATE INDEX idx_task_attempts_task_id ON task_attempts(task_id);
 
 ---
 
-## ⚖️ Ethics & Limitations
+## Ethics & Limitations
 
 | Topic | Policy |
 |-------|--------|
@@ -601,7 +621,7 @@ CREATE INDEX idx_task_attempts_task_id ON task_attempts(task_id);
 
 ---
 
-## 📄 License
+## License
 
 MIT © 2026 TenderPulse Team
 
