@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import json
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -48,10 +50,18 @@ def _write_csv(records: list[dict], path: Path) -> None:
         writer.writerows(records)
 
 
+def _default_serializer(obj):
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return str(obj)
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
 def _write_jsonl(records: list[dict], path: Path) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for record in records:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            f.write(json.dumps(record, ensure_ascii=False, default=_default_serializer) + "\n")
 
 
 def _merge_record(listing: Tender, detail: Tender | None) -> dict:
@@ -129,7 +139,7 @@ def _fetch_details(
 
     for listing in listings[sample:]:
         combined.append(_merge_record(listing, None))
-        details.append(Tender(tender_id=""))
+        details.append(Tender(tender_id="skip"))
 
     return combined, details
 
