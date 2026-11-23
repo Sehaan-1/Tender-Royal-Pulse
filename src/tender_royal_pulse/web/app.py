@@ -5,14 +5,11 @@ import io
 import json
 import logging
 import sqlite3
-import threading
-from datetime import UTC, datetime
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from tender_royal_pulse.cli_helpers import build_row_processor, resolve_db
@@ -252,7 +249,7 @@ def create_app(db_path: str = "data/tenderpulse.db") -> FastAPI:
 
     def _execute_crawl_background(run_id: str, pages_limit: int, mode: str) -> None:
         try:
-            conn = resolve_db(Path(db_path))
+            resolve_db(Path(db_path))
             engine = CrawlEngine(
                 db_path,
                 row_processor=build_row_processor("mock"),
