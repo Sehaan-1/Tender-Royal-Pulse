@@ -208,6 +208,7 @@ def ui(
 ) -> None:
     """Launch the TenderPulse Web UI dashboard."""
     import uvicorn
+
     from tender_royal_pulse.web.app import create_app
 
     console.print(f"[green]Starting TenderPulse UI on http://{host}:{port} ...[/green]")

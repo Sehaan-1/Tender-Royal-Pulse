@@ -51,3 +51,4 @@ samples/sample_outputs/tenders.jsonl
 
 # Run artifacts / summaries (generated per run)
 reports/
+.vercel
