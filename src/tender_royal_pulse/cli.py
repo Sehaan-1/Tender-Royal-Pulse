@@ -200,5 +200,20 @@ def status(
     console.print(table)
 
 
+@app.command()
+def ui(
+    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host interface to bind"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port to bind"),
+    db_path: Path = typer.Option(Path("data/tenderpulse.db"), "--db", "-d", help="SQLite database path"),
+) -> None:
+    """Launch the TenderPulse Web UI dashboard."""
+    import uvicorn
+    from tender_royal_pulse.web.app import create_app
+
+    console.print(f"[green]Starting TenderPulse UI on http://{host}:{port} ...[/green]")
+    server_app = create_app(str(db_path))
+    uvicorn.run(server_app, host=host, port=port)
+
+
 if __name__ == "__main__":
     app()
