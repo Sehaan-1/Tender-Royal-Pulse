@@ -18,12 +18,25 @@
 > **Crawl. Validate. Export.**
 > Automated extraction of 50 000+ public tenders from [eProcure / CPPP](https://etenders.gov.in) — India's Government procurement portal — with crash recovery, idempotent upserts, and a full retry taxonomy.
 
+<br/>
+
+### 🎥 Live Dashboard & Crawler Walkthrough
+
+[![TenderPulse Walkthrough Demo](assets/demo.gif)](https://tender-royal-pulse.vercel.app)
+
+<p align="center">
+  <b><a href="https://tender-royal-pulse.vercel.app">🌐 Launch Live Web UI (Vercel)</a></b> &nbsp;•&nbsp; 
+  <b><a href="assets/demo.mp4">📹 Download Full HD Walkthrough (MP4)</a></b> &nbsp;•&nbsp; 
+  <b><a href="#interactive-web-dashboard">🖥️ Local UI Guide</a></b>
+</p>
+
 </div>
 
 ---
 
 ## Table of Contents
 
+- [Live Demo & Walkthrough](#-live-dashboard--crawler-walkthrough)
 - [Why eProcure Is Hard](#why-eprocure-is-hard)
 - [Architecture Overview](#architecture-overview)
 - [Key Features](#key-features)
@@ -36,6 +49,9 @@
 - [Quickstart](#quickstart)
 - [Installation](#installation)
 - [Usage](#usage)
+  - [Interactive Web Dashboard](#interactive-web-dashboard)
+  - [Crawl tenders](#crawl-tenders)
+  - [Export from an existing database](#export-from-an-existing-database)
 - [Testing](#testing)
 - [Makefile Reference](#makefile-reference)
 - [Database Schema](#database-schema)
@@ -397,6 +413,23 @@ tenderpulse --help
 ---
 
 ## Usage
+
+### Interactive Web Dashboard
+
+Launch the local web dashboard or connect directly to the live cloud deployment:
+
+```bash
+# Launch local Web UI (FastAPI + Tailwind)
+tenderpulse ui --host 127.0.0.1 --port 8000
+
+# Or via Makefile target
+make ui
+```
+
+- **Live Cloud Deployment:** [https://tender-royal-pulse.vercel.app](https://tender-royal-pulse.vercel.app)
+- **Features:** Real-time search by Tender ID, Department, or keyword; faceted category filtering; modal detail inspection; crawl run supervision; and instant CSV / JSONL streaming exports.
+
+---
 
 ### Crawl tenders
 
